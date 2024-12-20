@@ -24,44 +24,34 @@ impl DBFile {
         }
     }
 
-    // TODO: deserialize, take an array and read the header and data and make a DB File from it
+    pub fn deserialize(bytes: Vec<u8>) -> Self {
+        if bytes.len() % 4096 != 0 {
+            panic!("Attempting to deserialize from non-page aligned byte array");
+        }
+
+        let mut pages: Vec<Page> = vec![];
+
+        for i in 0..(bytes.len() / 4096) {
+            pages.push(Page::from_bytes(&bytes[i * 4096..(i + 1) * 4096]));
+        }
+
+        let pages = BTreeSet::from_iter(pages);
+        Self { pages }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::page::*;
 
     #[test]
-    fn files() {
-        let data = vec![
-            DiskRecord { id: 1, val: 10 },
-            DiskRecord { id: 2, val: 20 },
-            DiskRecord { id: 3, val: 30 },
-            DiskRecord { id: 4, val: 40 },
-        ];
-
-        let page1 = Page::new(&data);
-
-        let mut data = data;
-
-        data.pop();
-        data.push(DiskRecord { id: 4, val: 50 });
-
-        let page2 = Page::new(&data);
-
-        let pages = BTreeSet::from_iter(vec![page2, page1]);
-
-        let file = DBFile { pages };
-
-        assert_eq!(file, DBFile::default());
-    }
-
-    #[test]
-    fn write() {
+    fn read_write() {
         let mut data = vec![];
 
-        for i in 1..1000 {
+        for i in 1..10 {
             data.push(DiskRecord { id: i, val: i });
         }
 
@@ -71,10 +61,11 @@ mod tests {
         let pages = BTreeSet::from_iter(vec![head, tail]);
 
         let file = DBFile { pages };
-        dbg!(&file.pages);
 
         file.serialize("file.out");
 
-        assert!(true == false)
+        let bytes = fs::read("file.out").unwrap();
+
+        assert_eq!(DBFile::deserialize(bytes), file)
     }
 }

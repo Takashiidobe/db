@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageHeader {
-    pub count: u32,
     pub start: u32,
     pub end: u32,
+    pub count: u32,
 }
 
 pub fn bytes_to_u32(bytes: &[u8]) -> u32 {
@@ -13,16 +13,16 @@ pub fn bytes_to_u32(bytes: &[u8]) -> u32 {
 
 impl PageHeader {
     pub fn to_bytes(self) -> Vec<u8> {
-        let mut res = self.count.to_le_bytes().to_vec();
-        res.extend(self.start.to_le_bytes());
+        let mut res = self.start.to_le_bytes().to_vec();
         res.extend(self.end.to_le_bytes());
+        res.extend(self.count.to_le_bytes());
         res
     }
 
     pub fn from_bytes(bytes: &[u8; 12]) -> Self {
-        let count = bytes_to_u32(&bytes[0..4]);
-        let start = bytes_to_u32(&bytes[4..8]);
-        let end = bytes_to_u32(&bytes[8..12]);
+        let start = bytes_to_u32(&bytes[0..4]);
+        let end = bytes_to_u32(&bytes[4..8]);
+        let count = bytes_to_u32(&bytes[8..12]);
 
         Self { count, start, end }
     }
@@ -66,8 +66,6 @@ impl Page {
     pub fn new(data: &[DiskRecord]) -> Self {
         let data = BTreeSet::from_iter(data.to_vec());
 
-        dbg!(&data);
-
         let start = data.first().unwrap_or(&DiskRecord { id: 0, val: 0 }).id;
         let end = data.last().unwrap_or(&DiskRecord { id: 0, val: 0 }).id;
 
@@ -105,7 +103,7 @@ impl Page {
         res
     }
 
-    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+    pub fn from_bytes(bytes: &[u8]) -> Self {
         let header_bytes: &[u8; 12] = bytes[0..12].try_into().unwrap();
 
         let header = PageHeader::from_bytes(header_bytes);
@@ -120,11 +118,7 @@ impl Page {
             offset += 8;
         }
 
-        Self {
-            header,
-            data: BTreeSet::from_iter(data),
-            dirty: false,
-        }
+        Page::new(&data)
     }
 
     pub fn size(&self) -> usize {
@@ -292,7 +286,7 @@ mod tests {
 
         let page = Page::new(data);
 
-        assert_eq!(Page::from_bytes(page.to_bytes()), page);
+        assert_eq!(Page::from_bytes(&page.to_bytes()), page);
     }
 
     #[quickcheck]
@@ -301,7 +295,7 @@ mod tests {
             return true;
         }
         let page = Page::new(&records);
-        Page::from_bytes(page.to_bytes()) == page
+        Page::from_bytes(&page.to_bytes()) == page
     }
 
     #[quickcheck]
