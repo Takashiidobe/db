@@ -60,9 +60,13 @@ pub struct Page {
     pub dirty: bool,
 }
 
+pub const PAGE_SIZE: usize = 4096;
+
 impl Page {
     pub fn new(data: &[DiskRecord]) -> Self {
         let data = BTreeSet::from_iter(data.to_vec());
+
+        dbg!(&data);
 
         let start = data.first().unwrap_or(&DiskRecord { id: 0, val: 0 }).id;
         let end = data.last().unwrap_or(&DiskRecord { id: 0, val: 0 }).id;
@@ -76,7 +80,7 @@ impl Page {
         Page {
             header,
             data,
-            dirty: false,
+            dirty: true,
         }
     }
 
@@ -85,6 +89,19 @@ impl Page {
         for record in &self.data {
             res.extend(record.to_bytes());
         }
+        res
+    }
+
+    pub fn to_page_bytes(&self) -> Vec<u8> {
+        let mut res = self.header.to_bytes();
+        for record in &self.data {
+            res.extend(record.to_bytes());
+        }
+        if res.len() > PAGE_SIZE {
+            panic!("The page is larger than the page boundary");
+        }
+        let bytes_to_pad = PAGE_SIZE - res.len();
+        res.extend(vec![0; bytes_to_pad]);
         res
     }
 
@@ -142,19 +159,23 @@ impl Page {
         self.header.count += 1;
         self.header.start = self.header.start.min(record.id);
         self.header.end = self.header.start.max(record.id);
+        self.dirty = true;
         self.data.insert(record);
     }
 
     pub fn remove(&mut self, record: &DiskRecord) -> bool {
-        self.header.count -= 1;
         let res = self.data.remove(record);
 
-        self.header.start = self
-            .data
-            .first()
-            .unwrap_or(&DiskRecord { id: 0, val: 0 })
-            .id;
-        self.header.end = self.data.last().unwrap_or(&DiskRecord { id: 0, val: 0 }).id;
+        if res {
+            self.header.count -= 1;
+            self.header.start = self
+                .data
+                .first()
+                .unwrap_or(&DiskRecord { id: 0, val: 0 })
+                .id;
+            self.header.end = self.data.last().unwrap_or(&DiskRecord { id: 0, val: 0 }).id;
+            self.dirty = true;
+        }
 
         res
     }
