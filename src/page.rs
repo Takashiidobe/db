@@ -32,7 +32,7 @@ impl PageHeader {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct DiskRecord {
     pub id: u32,
     pub val: u32,
@@ -131,11 +131,32 @@ impl Page {
         (Self::new(head), Self::new(tail))
     }
 
-    pub fn merge(&mut self, other: Page) -> Self {
+    pub fn merge(&mut self, other: Page) {
         let mut new_data = self.data.clone();
         new_data.extend(other.data);
         let vec_data: Vec<_> = new_data.into_iter().collect();
-        Self::new(&vec_data)
+        *self = Self::new(&vec_data)
+    }
+
+    pub fn insert(&mut self, record: DiskRecord) {
+        self.header.count += 1;
+        self.header.start = self.header.start.min(record.id);
+        self.header.end = self.header.start.max(record.id);
+        self.data.insert(record);
+    }
+
+    pub fn remove(&mut self, record: &DiskRecord) -> bool {
+        self.header.count -= 1;
+        let res = self.data.remove(record);
+
+        self.header.start = self
+            .data
+            .first()
+            .unwrap_or(&DiskRecord { id: 0, val: 0 })
+            .id;
+        self.header.end = self.data.last().unwrap_or(&DiskRecord { id: 0, val: 0 }).id;
+
+        res
     }
 }
 
@@ -194,6 +215,52 @@ mod tests {
     }
 
     #[test]
+    fn merge() {
+        let data = &[
+            DiskRecord { id: 1, val: 10 },
+            DiskRecord { id: 2, val: 20 },
+            DiskRecord { id: 4, val: 40 },
+            DiskRecord { id: 3, val: 30 },
+        ];
+        let (head, tail) = data.split_at(data.len() / 2);
+
+        let mut head = Page::new(head);
+        head.merge(Page::new(tail));
+        assert_eq!(head, Page::new(data));
+    }
+
+    #[test]
+    fn insert() {
+        let mut data = vec![
+            DiskRecord { id: 1, val: 10 },
+            DiskRecord { id: 2, val: 20 },
+            DiskRecord { id: 3, val: 30 },
+        ];
+        let record_to_add = DiskRecord { id: 4, val: 40 };
+
+        let mut head = Page::new(&data);
+        head.insert(record_to_add);
+        data.push(record_to_add);
+        assert_eq!(head, Page::new(&data));
+    }
+
+    #[test]
+    fn remove() {
+        let mut data = vec![
+            DiskRecord { id: 1, val: 10 },
+            DiskRecord { id: 2, val: 20 },
+            DiskRecord { id: 3, val: 30 },
+            DiskRecord { id: 4, val: 40 },
+        ];
+        let record_to_remove = DiskRecord { id: 4, val: 40 };
+
+        let mut head = Page::new(&data);
+        head.remove(&record_to_remove);
+        data.pop();
+        assert_eq!(head, Page::new(&data));
+    }
+
+    #[test]
     fn serde() {
         let data = &[
             DiskRecord { id: 3, val: 30 },
@@ -223,6 +290,7 @@ mod tests {
         }
         let page = Page::new(&records);
         let (mut head, tail) = page.split();
-        head.merge(tail) == page
+        head.merge(tail);
+        head == page
     }
 }
