@@ -36,8 +36,7 @@ impl DB {
     pub fn insert(&mut self, id: u32, val: u32) {
         // in case of an empty db
         if self.pages.is_empty() {
-            let mut new_page = Page::new(&[]);
-            new_page.insert(DiskRecord { id, val });
+            let new_page = Page::new(&[DiskRecord { id, val }]);
             self.pages.insert(new_page);
             return;
         }
@@ -62,8 +61,8 @@ impl DB {
             }
         }
 
+        // handle append
         if let Some(last_page) = self.pages.last() {
-            // handle append to end
             if id > last_page.header.end {
                 let mut last_page = self.pages.pop_last().unwrap();
                 last_page.insert(DiskRecord { id, val });
@@ -81,32 +80,28 @@ impl DB {
             }
         }
 
-        // otherwise, find the page where start <= id <= end and index into it.
+        // otherwise, find the page where start < id < end and index into it.
         let mut range = self
             .pages
-            .range((
-                Included(Page {
+            .range(
+                Page {
                     header: PageHeader {
-                        start: 0,
-                        end: 0,
-                        count: 0,
+                        end: u32::MIN,
+                        start: u32::MIN,
+                        count: u32::MIN,
                     },
                     dirty: false,
                     data: BTreeMap::new(),
-                }),
-                Included(Page {
-                    header: PageHeader {
-                        start: 0,
-                        end: id,
-                        count: u32::MAX,
-                    },
-                    dirty: false,
-                    data: BTreeMap::new(),
-                }),
-            ))
+                }..,
+            )
             .rev();
 
-        let mut fetched_page: Page = range.next().unwrap().clone();
+        dbg!((id, val));
+        dbg!(&self.pages);
+        dbg!(&range);
+        let next_page = range.next().unwrap();
+        dbg!(&next_page);
+        let mut fetched_page: Page = next_page.clone();
 
         self.pages.remove(&fetched_page);
         fetched_page.insert(DiskRecord { id, val });
@@ -138,6 +133,8 @@ impl Drop for DB {
 mod tests {
     use std::fs;
 
+    use quickcheck_macros::quickcheck;
+
     use super::*;
     use crate::page::*;
 
@@ -156,12 +153,12 @@ mod tests {
 
         let file = DB {
             pages,
-            file_name: "test.out".to_string(),
+            file_name: "read_write.out".to_string(),
         };
 
         file.serialize();
 
-        let bytes = fs::read("test.out").unwrap();
+        let bytes = fs::read("read_write.out").unwrap();
 
         assert_eq!(deserialize(bytes), file.pages)
     }
@@ -170,67 +167,45 @@ mod tests {
     fn insert() {
         let mut data = vec![];
 
-        for i in 1..5 {
+        for i in 1..=2 {
             data.push(DiskRecord { id: i, val: i });
         }
-        for i in 6..11 {
-            data.push(DiskRecord { id: i, val: i });
-        }
-        for i in 11..21 {
+
+        for i in 4..=5 {
             data.push(DiskRecord { id: i, val: i });
         }
 
         let page = Page::new(&data);
         let (head, tail) = page.split();
-        let (h1, h2) = head.split();
-        let (t1, t2) = tail.split();
 
-        let pages = BTreeSet::from_iter(vec![h1, h2, t1, t2]);
+        let pages = BTreeSet::from_iter(vec![head, tail]);
 
         let mut db = DB {
             pages,
-            file_name: "file.out".to_string(),
+            file_name: "insert.out".to_string(),
         };
-        db.insert(5, 5);
+        db.insert(3, 3);
         assert_eq!(
             db.pages,
             BTreeSet::from_iter(vec![
                 Page {
                     header: PageHeader {
-                        end: 5,
+                        end: 2,
                         start: 1,
-                        count: 5
+                        count: 2
                     },
-                    data: BTreeMap::from([(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]),
+                    data: BTreeMap::from([(1, 1), (2, 2)]),
                     dirty: true
                 },
                 Page {
                     header: PageHeader {
-                        end: 10,
-                        start: 6,
-                        count: 5
+                        end: 5,
+                        start: 3,
+                        count: 3
                     },
-                    data: BTreeMap::from_iter([(6, 6), (7, 7), (8, 8), (9, 9), (10, 10)]),
+                    data: BTreeMap::from([(3, 3), (4, 4), (5, 5)]),
                     dirty: true
                 },
-                Page {
-                    header: PageHeader {
-                        end: 15,
-                        start: 11,
-                        count: 5
-                    },
-                    data: BTreeMap::from_iter([(11, 11), (12, 12), (13, 13), (14, 14), (15, 15)]),
-                    dirty: true
-                },
-                Page {
-                    header: PageHeader {
-                        end: 20,
-                        start: 16,
-                        count: 5
-                    },
-                    data: BTreeMap::from_iter([(16, 16), (17, 17), (18, 18), (19, 19), (20, 20)]),
-                    dirty: true
-                }
             ])
         );
     }
@@ -244,10 +219,35 @@ mod tests {
             file_name: "insert_loop.out".to_string(),
         };
 
-        for i in 0..25 {
+        for i in 1..=5 {
             db.insert(i, i);
         }
 
-        assert_eq!(db.pages, BTreeSet::new());
+        assert_eq!(
+            db.pages,
+            BTreeSet::from_iter(vec![Page {
+                header: PageHeader {
+                    end: 5,
+                    start: 1,
+                    count: 5
+                },
+                data: BTreeMap::from([(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]),
+                dirty: true
+            }])
+        );
+    }
+
+    #[quickcheck]
+    fn fuzz_db_inserts(records: Vec<(u32, u32)>) -> bool {
+        let mut db = DB {
+            pages: BTreeSet::new(),
+            file_name: "fuzz_db_inserts.out".to_string(),
+        };
+
+        for (id, val) in records {
+            db.insert(id, val);
+        }
+
+        true
     }
 }

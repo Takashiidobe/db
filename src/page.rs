@@ -164,7 +164,7 @@ impl Page {
     pub fn insert(&mut self, record: DiskRecord) {
         self.header.count += 1;
         self.header.start = self.header.start.min(record.id);
-        self.header.end = self.header.start.max(record.id);
+        self.header.end = self.header.end.max(record.id);
         self.dirty = true;
         self.data.insert(record.id, record.val);
     }
