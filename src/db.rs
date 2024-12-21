@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{BufWriter, Seek as _, SeekFrom, Write as _},
-    ops::Bound::Included,
 };
 
 use crate::page::{DiskRecord, Page, PageHeader, PAGE_SIZE};
@@ -31,6 +30,40 @@ impl DB {
                 let _ = f.write_all(&page.to_page_bytes());
             }
         }
+    }
+
+    pub fn get(&self, id: u32) -> Option<u32> {
+        // if empty, return None
+        if self.pages.is_empty() {
+            return None;
+        }
+
+        // otherwise, find the page where start <= id <= end
+        let mut range = self
+            .pages
+            .range(
+                Page {
+                    header: PageHeader {
+                        end: id,
+                        start: u32::MIN,
+                        count: u32::MIN,
+                    },
+                    dirty: false,
+                    data: BTreeMap::new(),
+                }..=Page {
+                    header: PageHeader {
+                        end: u32::MAX,
+                        start: id,
+                        count: u32::MAX,
+                    },
+                    dirty: true,
+                    data: BTreeMap::new(),
+                },
+            )
+            .rev();
+
+        let next_page = range.next().unwrap();
+        next_page.get(id).map(|DiskRecord { val, .. }| val)
     }
 
     pub fn insert(&mut self, id: u32, val: u32) {
@@ -80,27 +113,30 @@ impl DB {
             }
         }
 
-        // otherwise, find the page where start < id < end and index into it.
         let mut range = self
             .pages
             .range(
                 Page {
                     header: PageHeader {
-                        end: u32::MIN,
+                        end: id,
                         start: u32::MIN,
                         count: u32::MIN,
                     },
                     dirty: false,
                     data: BTreeMap::new(),
-                }..,
+                }..=Page {
+                    header: PageHeader {
+                        end: u32::MAX,
+                        start: id,
+                        count: u32::MAX,
+                    },
+                    dirty: true,
+                    data: BTreeMap::new(),
+                },
             )
             .rev();
 
-        dbg!((id, val));
-        dbg!(&self.pages);
-        dbg!(&range);
         let next_page = range.next().unwrap();
-        dbg!(&next_page);
         let mut fetched_page: Page = next_page.clone();
 
         self.pages.remove(&fetched_page);
@@ -211,6 +247,26 @@ mod tests {
     }
 
     #[test]
+    fn get() {
+        let mut data = vec![];
+
+        for i in 1..=10 {
+            data.push(DiskRecord { id: i, val: i });
+        }
+
+        let page = Page::new(&data);
+
+        let pages = BTreeSet::from_iter(vec![page]);
+
+        let db = DB {
+            pages,
+            file_name: "insert.out".to_string(),
+        };
+
+        assert_eq!(db.get(3), Some(3));
+    }
+
+    #[test]
     fn insert_loop() {
         let pages = BTreeSet::new();
 
@@ -249,5 +305,22 @@ mod tests {
         }
 
         true
+    }
+
+    #[quickcheck]
+    fn fuzz_db_get(records: BTreeSet<u32>) -> bool {
+        let mut db = DB {
+            pages: BTreeSet::new(),
+            file_name: "fuzz_db_get.out".to_string(),
+        };
+
+        for val in &records {
+            db.insert(*val, *val);
+        }
+
+        records
+            .into_iter()
+            .map(|id| db.get(id) == Some(id))
+            .all(|f| f)
     }
 }
