@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageHeader {
-    pub start: u32,
     pub end: u32,
+    pub start: u32,
     pub count: u32,
 }
 
@@ -13,18 +13,18 @@ pub fn bytes_to_u32(bytes: &[u8]) -> u32 {
 
 impl PageHeader {
     pub fn to_bytes(self) -> Vec<u8> {
-        let mut res = self.start.to_le_bytes().to_vec();
-        res.extend(self.end.to_le_bytes());
+        let mut res = self.end.to_le_bytes().to_vec();
+        res.extend(self.start.to_le_bytes());
         res.extend(self.count.to_le_bytes());
         res
     }
 
     pub fn from_bytes(bytes: &[u8; 12]) -> Self {
-        let start = bytes_to_u32(&bytes[0..4]);
-        let end = bytes_to_u32(&bytes[4..8]);
+        let end = bytes_to_u32(&bytes[0..4]);
+        let start = bytes_to_u32(&bytes[4..8]);
         let count = bytes_to_u32(&bytes[8..12]);
 
-        Self { count, start, end }
+        Self { end, start, count }
     }
 
     pub fn size() -> usize {
