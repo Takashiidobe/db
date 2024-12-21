@@ -7,13 +7,20 @@ use std::{
 
 use crate::page::{DiskRecord, Page, PageHeader, PAGE_SIZE};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DB {
     pages: BTreeSet<Page>,
     file_name: String,
 }
 
 impl DB {
+    pub fn new(file_name: &str) -> Self {
+        Self {
+            file_name: file_name.to_string(),
+            pages: BTreeSet::new(),
+        }
+    }
+
     pub fn serialize(&self) {
         let f = File::create(&self.file_name).unwrap();
         let mut f = BufWriter::new(f);
