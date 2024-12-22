@@ -68,6 +68,65 @@ impl DB {
         }
     }
 
+    pub fn remove(&mut self, id: u32) -> Option<u32> {
+        // if empty, return None
+        if self.pages.is_empty() {
+            return None;
+        }
+
+        // handle case when id is too small
+        if let Some(first_page) = self.pages.first() {
+            dbg!(&first_page.size());
+            if id < first_page.header.start {
+                return None;
+            }
+        }
+
+        // handle case when id is too large
+        if let Some(last_page) = self.pages.last() {
+            if id > last_page.header.end {
+                return None;
+            }
+        }
+
+        // otherwise, find the page where start <= id <= end
+        let mut range = self
+            .pages
+            .range(
+                Page {
+                    header: PageHeader {
+                        end: id,
+                        start: u32::MIN,
+                        count: u32::MIN,
+                    },
+                    dirty: false,
+                    data: BTreeMap::new(),
+                }..=Page {
+                    header: PageHeader {
+                        end: u32::MAX,
+                        start: id,
+                        count: u32::MAX,
+                    },
+                    dirty: true,
+                    data: BTreeMap::new(),
+                },
+            )
+            .rev();
+
+        let next_page = range.next().unwrap();
+        let mut fetched_page: Page = next_page.clone();
+
+        self.pages.remove(&fetched_page);
+        let res = fetched_page.remove(id);
+
+        // if the page still has items, readd it in
+        if fetched_page.header.count != 0 {
+            self.pages.insert(fetched_page);
+        }
+
+        res
+    }
+
     pub fn insert(&mut self, id: u32, val: u32) {
         // in case of an empty db
         if self.pages.is_empty() {

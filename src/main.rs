@@ -44,6 +44,15 @@ fn main() -> Result<()> {
                         println!("Key {id} not found.");
                     }
                 }
+                if line.starts_with("delete ") {
+                    let copy = line.strip_prefix("delete ").unwrap();
+                    let id: u32 = copy.parse().unwrap();
+                    if let Some(val) = db.remove(id) {
+                        println!("removed: {val}");
+                    } else {
+                        println!("Key {id} not found.");
+                    }
+                }
                 if line.starts_with("show") {
                     println!("{:?}", db.pages);
                 }
