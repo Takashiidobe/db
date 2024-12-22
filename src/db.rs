@@ -8,8 +8,8 @@ use crate::page::{DiskRecord, Page, PageHeader, PAGE_SIZE};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DB {
-    pages: BTreeSet<Page>,
-    file_name: String,
+    pub pages: BTreeSet<Page>,
+    pub file_name: String,
 }
 
 impl DB {
@@ -62,8 +62,10 @@ impl DB {
             )
             .rev();
 
-        let next_page = range.next().unwrap();
-        next_page.get(id).map(|DiskRecord { val, .. }| val)
+        match range.next() {
+            Some(next_page) => next_page.get(id).map(|DiskRecord { val, .. }| val),
+            None => None,
+        }
     }
 
     pub fn insert(&mut self, id: u32, val: u32) {
@@ -76,6 +78,7 @@ impl DB {
 
         // handle prepend
         if let Some(first_page) = self.pages.first() {
+            dbg!(&first_page.size());
             if id < first_page.header.start {
                 let mut first_page = self.pages.pop_first().unwrap();
                 first_page.insert(DiskRecord { id, val });
@@ -96,6 +99,7 @@ impl DB {
 
         // handle append
         if let Some(last_page) = self.pages.last() {
+            dbg!(&last_page.size());
             if id > last_page.header.end {
                 let mut last_page = self.pages.pop_last().unwrap();
                 last_page.insert(DiskRecord { id, val });
@@ -141,7 +145,15 @@ impl DB {
 
         self.pages.remove(&fetched_page);
         fetched_page.insert(DiskRecord { id, val });
-        self.pages.insert(fetched_page);
+        dbg!(&fetched_page.size());
+
+        if fetched_page.size() > PAGE_SIZE {
+            let (head, tail) = fetched_page.split();
+            self.pages.insert(head);
+            self.pages.insert(tail);
+        } else {
+            self.pages.insert(fetched_page);
+        }
     }
 }
 
@@ -275,7 +287,10 @@ mod tests {
             file_name: "insert_loop.out".to_string(),
         };
 
-        for i in 1..=5 {
+        let mut iter = vec![];
+
+        for i in 1..=510 {
+            iter.push((i, i));
             db.insert(i, i);
         }
 
@@ -283,11 +298,11 @@ mod tests {
             db.pages,
             BTreeSet::from_iter(vec![Page {
                 header: PageHeader {
-                    end: 5,
+                    end: 510,
                     start: 1,
-                    count: 5
+                    count: 510,
                 },
-                data: BTreeMap::from([(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]),
+                data: BTreeMap::from_iter(iter),
                 dirty: true
             }])
         );
