@@ -36,7 +36,11 @@ pub struct Page {
     pub dirty: bool,
 }
 
-pub const PAGE_SIZE: usize = 32;
+pub const PAGE_SIZE: usize = if cfg!(feature = "small_pages") {
+    28
+} else {
+    4096
+};
 
 impl Page {
     pub fn new(data: &[Record]) -> Self {

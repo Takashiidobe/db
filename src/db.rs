@@ -298,21 +298,24 @@ mod tests {
 
         assert_eq!(
             deserialized,
-            BTreeSet::from_iter(vec![Page {
-                header: PageHeader {
-                    end: NonZeroU32::new(5).unwrap(),
-                    start: NonZeroU32::new(1).unwrap(),
-                    count: 5
+            BTreeSet::from_iter(vec![(
+                Page {
+                    header: PageHeader {
+                        end: NonZeroU32::new(5).unwrap(),
+                        start: NonZeroU32::new(1).unwrap(),
+                        count: 5
+                    },
+                    data: BTreeMap::from([
+                        (NonZeroU32::new(1).unwrap(), 1),
+                        (NonZeroU32::new(2).unwrap(), 2),
+                        (NonZeroU32::new(3).unwrap(), 3),
+                        (NonZeroU32::new(4).unwrap(), 4),
+                        (NonZeroU32::new(5).unwrap(), 5)
+                    ]),
+                    dirty: false
                 },
-                data: BTreeMap::from([
-                    (NonZeroU32::new(1).unwrap(), 1),
-                    (NonZeroU32::new(2).unwrap(), 2),
-                    (NonZeroU32::new(3).unwrap(), 3),
-                    (NonZeroU32::new(4).unwrap(), 4),
-                    (NonZeroU32::new(5).unwrap(), 5)
-                ]),
-                dirty: false
-            }])
+                Some(0)
+            )])
         );
     }
 
@@ -337,7 +340,7 @@ mod tests {
         let page = Page::new(&data);
         let (head, tail) = page.split();
 
-        let pages = BTreeSet::from_iter(vec![head, tail]);
+        let pages = BTreeSet::from_iter(vec![(head, None), (tail, None)]);
 
         let mut db = DB::new_with_pages(pages, "tests/insert");
 
@@ -347,31 +350,37 @@ mod tests {
         assert_eq!(
             db.pages,
             BTreeSet::from_iter(vec![
-                Page {
-                    header: PageHeader {
-                        end: NonZeroU32::new(2).unwrap(),
-                        start: NonZeroU32::new(1).unwrap(),
-                        count: 2
+                (
+                    Page {
+                        header: PageHeader {
+                            end: NonZeroU32::new(2).unwrap(),
+                            start: NonZeroU32::new(1).unwrap(),
+                            count: 2
+                        },
+                        data: BTreeMap::from([
+                            (NonZeroU32::new(1).unwrap(), 1),
+                            (NonZeroU32::new(2).unwrap(), 2)
+                        ]),
+                        dirty: true
                     },
-                    data: BTreeMap::from([
-                        (NonZeroU32::new(1).unwrap(), 1),
-                        (NonZeroU32::new(2).unwrap(), 2)
-                    ]),
-                    dirty: true
-                },
-                Page {
-                    header: PageHeader {
-                        end: NonZeroU32::new(5).unwrap(),
-                        start: NonZeroU32::new(3).unwrap(),
-                        count: 3
+                    None
+                ),
+                (
+                    Page {
+                        header: PageHeader {
+                            end: NonZeroU32::new(5).unwrap(),
+                            start: NonZeroU32::new(3).unwrap(),
+                            count: 3
+                        },
+                        data: BTreeMap::from([
+                            (NonZeroU32::new(3).unwrap(), 3),
+                            (NonZeroU32::new(4).unwrap(), 4),
+                            (NonZeroU32::new(5).unwrap(), 5),
+                        ]),
+                        dirty: true
                     },
-                    data: BTreeMap::from([
-                        (NonZeroU32::new(3).unwrap(), 3),
-                        (NonZeroU32::new(4).unwrap(), 4),
-                        (NonZeroU32::new(5).unwrap(), 5),
-                    ]),
-                    dirty: true
-                },
+                    None
+                )
             ])
         );
     }
@@ -389,7 +398,7 @@ mod tests {
 
         let page = Page::new(&data);
 
-        let pages = BTreeSet::from_iter(vec![page]);
+        let pages = BTreeSet::from_iter(vec![(page, None)]);
 
         let db = DB::new_with_pages(pages, "tests/insert");
 
@@ -411,15 +420,18 @@ mod tests {
 
         assert_eq!(
             db.pages,
-            BTreeSet::from_iter(vec![Page {
-                header: PageHeader {
-                    end: 510.try_into().unwrap(),
-                    start: 1.try_into().unwrap(),
-                    count: 510,
+            BTreeSet::from_iter(vec![(
+                Page {
+                    header: PageHeader {
+                        end: 510.try_into().unwrap(),
+                        start: 1.try_into().unwrap(),
+                        count: 510,
+                    },
+                    data: BTreeMap::from_iter(iter),
+                    dirty: true
                 },
-                data: BTreeMap::from_iter(iter),
-                dirty: true
-            }])
+                None
+            )])
         );
     }
 
