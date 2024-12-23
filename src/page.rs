@@ -1,27 +1,24 @@
-use std::collections::BTreeMap;
+use crate::{record::Record, utils::bytes_to_u32};
+use std::{collections::BTreeMap, num::NonZeroU32};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageHeader {
-    pub end: u32,
-    pub start: u32,
+    pub end: NonZeroU32,
+    pub start: NonZeroU32,
     pub count: u32,
-}
-
-pub fn bytes_to_u32(bytes: &[u8]) -> u32 {
-    u32::from_le_bytes(bytes.try_into().unwrap())
 }
 
 impl PageHeader {
     pub fn to_bytes(self) -> Vec<u8> {
-        let mut res = self.end.to_le_bytes().to_vec();
-        res.extend(self.start.to_le_bytes());
+        let mut res = self.end.get().to_le_bytes().to_vec();
+        res.extend(self.start.get().to_le_bytes());
         res.extend(self.count.to_le_bytes());
         res
     }
 
     pub fn from_bytes(bytes: &[u8; 12]) -> Self {
-        let end = bytes_to_u32(&bytes[0..4]);
-        let start = bytes_to_u32(&bytes[4..8]);
+        let end = NonZeroU32::new(bytes_to_u32(&bytes[0..4])).unwrap();
+        let start = NonZeroU32::new(bytes_to_u32(&bytes[4..8])).unwrap();
         let count = bytes_to_u32(&bytes[8..12]);
 
         Self { end, start, count }
@@ -32,47 +29,32 @@ impl PageHeader {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct DiskRecord {
-    pub id: u32,
-    pub val: u32,
-}
-
-impl DiskRecord {
-    pub fn to_bytes(self) -> Vec<u8> {
-        let mut res = self.id.to_le_bytes().to_vec();
-        res.extend(self.val.to_le_bytes());
-        res
-    }
-
-    pub fn from_bytes(bytes: &[u8; 8]) -> Self {
-        let id = bytes_to_u32(&bytes[0..4]);
-        let val = bytes_to_u32(&bytes[4..8]);
-
-        Self { id, val }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Page {
     pub header: PageHeader,
-    pub data: BTreeMap<u32, u32>,
+    pub data: BTreeMap<NonZeroU32, u32>,
     pub dirty: bool,
 }
 
 pub const PAGE_SIZE: usize = 4096;
 
 impl Page {
-    pub fn new(data: &[DiskRecord]) -> Self {
+    pub fn new(data: &[Record]) -> Self {
         let data = BTreeMap::from_iter(data.iter().map(|record| (record.id, record.val)));
 
-        let start = *data.first_key_value().unwrap_or((&0, &0)).0;
-        let end = *data.last_key_value().unwrap_or((&0, &0)).0;
+        let start = *data
+            .first_key_value()
+            .unwrap_or((&1.try_into().unwrap(), &0))
+            .0;
+        let end = *data
+            .last_key_value()
+            .unwrap_or((&1.try_into().unwrap(), &0))
+            .0;
 
         let header = PageHeader {
             count: data.len() as u32,
-            start,
-            end,
+            start: start.into(),
+            end: end.into(),
         };
 
         Page {
@@ -85,7 +67,7 @@ impl Page {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut res = self.header.to_bytes();
         for (id, val) in &self.data {
-            res.extend(DiskRecord { id: *id, val: *val }.to_bytes());
+            res.extend(Record { id: *id, val: *val }.to_bytes());
         }
         res
     }
@@ -93,7 +75,7 @@ impl Page {
     pub fn to_page_bytes(&self) -> Vec<u8> {
         let mut res = self.header.to_bytes();
         for (id, val) in &self.data {
-            res.extend(DiskRecord { id: *id, val: *val }.to_bytes());
+            res.extend(Record { id: *id, val: *val }.to_bytes());
         }
         if res.len() > PAGE_SIZE {
             panic!("The page is larger than the page boundary");
@@ -113,7 +95,7 @@ impl Page {
 
         for _ in 0..header.count {
             let record_bytes: &[u8; 8] = bytes[offset..offset + 8].try_into().unwrap();
-            let record = DiskRecord::from_bytes(record_bytes);
+            let record = Record::from_bytes(record_bytes);
             data.push(record);
             offset += 8;
         }
@@ -122,7 +104,7 @@ impl Page {
     }
 
     pub fn size(&self) -> usize {
-        std::mem::size_of::<DiskRecord>() * self.data.len() + PageHeader::size()
+        std::mem::size_of::<Record>() * self.data.len() + PageHeader::size()
     }
 
     pub fn len(&self) -> usize {
@@ -136,11 +118,11 @@ impl Page {
     pub fn split(&self) -> (Self, Self) {
         let len = self.len();
         let mid = len / 2;
-        let vec_data: Vec<DiskRecord> = self
+        let vec_data: Vec<Record> = self
             .data
             .clone()
             .into_iter()
-            .map(|(id, val)| DiskRecord { id, val })
+            .map(|(id, val)| Record { id, val })
             .collect();
         let (head, tail) = vec_data.split_at(mid);
 
@@ -150,31 +132,37 @@ impl Page {
     pub fn merge(&mut self, other: Page) {
         let mut new_data = self.data.clone();
         new_data.extend(other.data);
-        let vec_data: Vec<DiskRecord> = new_data
+        let vec_data: Vec<Record> = new_data
             .into_iter()
-            .map(|(id, val)| DiskRecord { id, val })
+            .map(|(id, val)| Record { id, val })
             .collect();
         *self = Self::new(&vec_data)
     }
 
-    pub fn get(&self, id: u32) -> Option<DiskRecord> {
-        self.data.get(&id).map(|val| DiskRecord { id, val: *val })
+    pub fn get(&self, id: NonZeroU32) -> Option<Record> {
+        self.data.get(&id).map(|val| Record { id, val: *val })
     }
 
-    pub fn insert(&mut self, record: DiskRecord) {
+    pub fn insert(&mut self, record: Record) {
         self.header.count += 1;
-        self.header.start = self.header.start.min(record.id);
-        self.header.end = self.header.end.max(record.id);
+        self.header.start = self.header.start.min(record.id.into());
+        self.header.end = self.header.end.max(record.id.into());
         self.dirty = true;
         self.data.insert(record.id, record.val);
     }
 
-    pub fn remove(&mut self, id: u32) -> Option<u32> {
+    pub fn remove(&mut self, id: NonZeroU32) -> Option<u32> {
         match self.data.remove(&id) {
             Some(val) => {
                 self.header.count -= 1;
-                self.header.start = *self.data.first_key_value().unwrap_or((&0, &0)).0;
-                self.header.end = *self.data.last_key_value().unwrap_or((&0, &0)).0;
+                self.header.start = match self.data.first_key_value() {
+                    Some((id, _)) => *id,
+                    None => NonZeroU32::MIN,
+                };
+                self.header.end = match self.data.last_key_value() {
+                    Some((id, _)) => *id,
+                    None => NonZeroU32::MIN,
+                };
                 self.dirty = true;
                 Some(val)
             }
@@ -185,11 +173,13 @@ impl Page {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZero;
+
     use super::*;
     use quickcheck::{Arbitrary, Gen};
     use quickcheck_macros::quickcheck;
 
-    impl Arbitrary for DiskRecord {
+    impl Arbitrary for Record {
         fn arbitrary(g: &mut Gen) -> Self {
             let id = u32::arbitrary(g);
             let val = u32::arbitrary(g);
@@ -201,16 +191,14 @@ mod tests {
                 bytes[i + 4] = b;
             }
 
-            DiskRecord::from_bytes(&bytes)
+            Record::from_bytes(&bytes)
         }
     }
 
     impl Arbitrary for Page {
         fn arbitrary(g: &mut Gen) -> Self {
             let record_count = u8::arbitrary(g);
-            let data: Vec<_> = (0..record_count)
-                .map(|_| DiskRecord::arbitrary(g))
-                .collect();
+            let data: Vec<_> = (0..record_count).map(|_| Record::arbitrary(g)).collect();
 
             Self::new(&data)
         }
@@ -219,31 +207,73 @@ mod tests {
     #[test]
     fn split() {
         let data = &[
-            DiskRecord { id: 1, val: 10 },
-            DiskRecord { id: 2, val: 20 },
-            DiskRecord { id: 4, val: 40 },
-            DiskRecord { id: 3, val: 30 },
+            Record {
+                id: NonZeroU32::new(3).unwrap(),
+                val: 30,
+            },
+            Record {
+                id: NonZeroU32::new(4).unwrap(),
+                val: 40,
+            },
+            Record {
+                id: NonZeroU32::new(1).unwrap(),
+                val: 10,
+            },
+            Record {
+                id: NonZeroU32::new(2).unwrap(),
+                val: 20,
+            },
         ];
 
         let page = Page::new(data);
         let (head, tail) = page.split();
         assert_eq!(
             head,
-            Page::new(&[DiskRecord { id: 1, val: 10 }, DiskRecord { id: 2, val: 20 },])
+            Page::new(&[
+                Record {
+                    id: NonZero::new(1).unwrap(),
+                    val: 10
+                },
+                Record {
+                    id: NonZero::new(2).unwrap(),
+                    val: 20
+                },
+            ])
         );
         assert_eq!(
             tail,
-            Page::new(&[DiskRecord { id: 3, val: 30 }, DiskRecord { id: 4, val: 40 }])
+            Page::new(&[
+                Record {
+                    id: NonZero::new(3).unwrap(),
+                    val: 30
+                },
+                Record {
+                    id: NonZero::new(4).unwrap(),
+                    val: 40
+                }
+            ])
         );
     }
 
     #[test]
     fn merge() {
         let data = &[
-            DiskRecord { id: 1, val: 10 },
-            DiskRecord { id: 2, val: 20 },
-            DiskRecord { id: 4, val: 40 },
-            DiskRecord { id: 3, val: 30 },
+            Record {
+                id: NonZeroU32::new(3).unwrap(),
+                val: 30,
+            },
+            Record {
+                id: NonZeroU32::new(4).unwrap(),
+                val: 40,
+            },
+            Record {
+                id: NonZeroU32::new(1).unwrap(),
+                val: 10,
+            },
+            Record {
+                id: NonZeroU32::new(2).unwrap(),
+                val: 20,
+            },
         ];
         let (head, tail) = data.split_at(data.len() / 2);
 
@@ -255,25 +285,52 @@ mod tests {
     #[test]
     fn get() {
         let data = vec![
-            DiskRecord { id: 1, val: 10 },
-            DiskRecord { id: 2, val: 20 },
-            DiskRecord { id: 3, val: 30 },
+            Record {
+                id: NonZeroU32::new(3).unwrap(),
+                val: 30,
+            },
+            Record {
+                id: NonZeroU32::new(1).unwrap(),
+                val: 10,
+            },
+            Record {
+                id: NonZeroU32::new(2).unwrap(),
+                val: 20,
+            },
         ];
-        let id_to_get = 3;
+        let id_to_get = NonZero::new(3).unwrap();
 
         let page = Page::new(&data);
         let item = page.get(id_to_get);
-        assert_eq!(item, Some(DiskRecord { id: 3, val: 30 }));
+        assert_eq!(
+            item,
+            Some(Record {
+                id: NonZero::new(3).unwrap(),
+                val: 30
+            })
+        );
     }
 
     #[test]
     fn insert() {
         let mut data = vec![
-            DiskRecord { id: 1, val: 10 },
-            DiskRecord { id: 2, val: 20 },
-            DiskRecord { id: 3, val: 30 },
+            Record {
+                id: NonZeroU32::new(3).unwrap(),
+                val: 30,
+            },
+            Record {
+                id: NonZeroU32::new(1).unwrap(),
+                val: 10,
+            },
+            Record {
+                id: NonZeroU32::new(2).unwrap(),
+                val: 20,
+            },
         ];
-        let record_to_add = DiskRecord { id: 4, val: 40 };
+        let record_to_add = Record {
+            id: NonZeroU32::new(4).unwrap(),
+            val: 40,
+        };
 
         let mut head = Page::new(&data);
         head.insert(record_to_add);
@@ -284,12 +341,25 @@ mod tests {
     #[test]
     fn remove() {
         let mut data = vec![
-            DiskRecord { id: 1, val: 10 },
-            DiskRecord { id: 2, val: 20 },
-            DiskRecord { id: 3, val: 30 },
-            DiskRecord { id: 4, val: 40 },
+            Record {
+                id: NonZeroU32::new(3).unwrap(),
+                val: 30,
+            },
+            Record {
+                id: NonZeroU32::new(1).unwrap(),
+                val: 10,
+            },
+            Record {
+                id: NonZeroU32::new(2).unwrap(),
+                val: 20,
+            },
+            Record {
+                id: NonZeroU32::new(4).unwrap(),
+                val: 40,
+            },
         ];
-        let id_to_remove = 4;
+
+        let id_to_remove = NonZero::new(4).unwrap();
 
         let mut head = Page::new(&data);
         head.remove(id_to_remove);
@@ -300,10 +370,22 @@ mod tests {
     #[test]
     fn serde() {
         let data = &[
-            DiskRecord { id: 3, val: 30 },
-            DiskRecord { id: 4, val: 40 },
-            DiskRecord { id: 1, val: 10 },
-            DiskRecord { id: 2, val: 20 },
+            Record {
+                id: NonZeroU32::new(3).unwrap(),
+                val: 30,
+            },
+            Record {
+                id: NonZeroU32::new(4).unwrap(),
+                val: 40,
+            },
+            Record {
+                id: NonZeroU32::new(1).unwrap(),
+                val: 10,
+            },
+            Record {
+                id: NonZeroU32::new(2).unwrap(),
+                val: 20,
+            },
         ];
 
         let page = Page::new(data);
@@ -312,7 +394,7 @@ mod tests {
     }
 
     #[quickcheck]
-    fn fuzz_page_new(records: Vec<DiskRecord>) -> bool {
+    fn fuzz_page_new(records: Vec<Record>) -> bool {
         if records.len() >= u32::MAX as usize {
             return true;
         }
@@ -321,7 +403,7 @@ mod tests {
     }
 
     #[quickcheck]
-    fn fuzz_page_split_merge(records: Vec<DiskRecord>) -> bool {
+    fn fuzz_page_split_merge(records: Vec<Record>) -> bool {
         if records.len() >= u32::MAX as usize {
             return true;
         }
