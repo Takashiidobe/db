@@ -27,6 +27,7 @@ fn main() -> Result<()> {
     let mut db = if fs::exists(&db_file_name).unwrap() {
         let page_bytes = fs::read(&db_file_name).unwrap();
         let pages = deserialize(page_bytes);
+
         let wal_bytes = fs::read(&wal_file_name).unwrap();
         let wal_records = deserialize_wal(&wal_bytes);
 
@@ -95,7 +96,13 @@ fn main() -> Result<()> {
                     }
                 }
                 if line.starts_with("show") {
+                    println!("Pages: ");
                     println!("{:?}", db.pages);
+                    println!("WAL: ");
+                    println!("{:?}", db.wal);
+                }
+                if line.starts_with("sync") {
+                    db.sync();
                 }
                 if line.trim() == "exit" {
                     break;

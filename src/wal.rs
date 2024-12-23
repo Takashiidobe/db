@@ -68,7 +68,8 @@ pub struct WAL {
 
 impl WAL {
     pub fn insert(&mut self, id: NonZeroU32, val: u32) -> bool {
-        let res = self.records.insert(id, val).is_some();
+        let res = self.records.insert(id, val).is_none();
+        dbg!(&res);
         let _ = self.file.write_all(&WALRecord::Insert(id, val).to_bytes());
 
         res

@@ -53,14 +53,14 @@ impl Page {
 
         let header = PageHeader {
             count: data.len() as u32,
-            start: start.into(),
-            end: end.into(),
+            start,
+            end,
         };
 
         Page {
             header,
             data,
-            dirty: true,
+            dirty: false,
         }
     }
 
@@ -144,17 +144,16 @@ impl Page {
     }
 
     pub fn insert(&mut self, record: Record) {
-        self.header.count += 1;
-        self.header.start = self.header.start.min(record.id.into());
-        self.header.end = self.header.end.max(record.id.into());
+        self.header.start = self.header.start.min(record.id);
+        self.header.end = self.header.end.max(record.id);
         self.dirty = true;
         self.data.insert(record.id, record.val);
+        self.header.count = self.data.len() as u32;
     }
 
     pub fn remove(&mut self, id: NonZeroU32) -> Option<u32> {
         match self.data.remove(&id) {
             Some(val) => {
-                self.header.count -= 1;
                 self.header.start = match self.data.first_key_value() {
                     Some((id, _)) => *id,
                     None => NonZeroU32::MIN,
@@ -163,6 +162,7 @@ impl Page {
                     Some((id, _)) => *id,
                     None => NonZeroU32::MIN,
                 };
+                self.header.count = self.data.len() as u32;
                 self.dirty = true;
                 Some(val)
             }

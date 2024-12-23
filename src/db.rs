@@ -63,6 +63,17 @@ impl DB {
         (db_file, wal_file)
     }
 
+    pub fn sync(&mut self) -> bool {
+        // apply all updates in wal to pages
+        for (id, val) in self.wal.records.clone() {
+            self.insert_to_page(id, val);
+        }
+
+        self.serialize();
+        self.wal.records.clear();
+        self.wal.file.set_len(0).is_ok()
+    }
+
     pub fn serialize(&self) {
         let mut f = BufWriter::new(&self.file);
         for (i, page) in self.pages.iter().enumerate() {
@@ -184,6 +195,10 @@ impl DB {
             return;
         }
 
+        self.insert_to_page(id, val)
+    }
+
+    fn insert_to_page(&mut self, id: NonZeroU32, val: u32) {
         // in case of an empty db
         if self.pages.is_empty() {
             let new_page = Page::new(&[Record { id, val }]);
@@ -193,7 +208,6 @@ impl DB {
 
         // handle prepend
         if let Some(first_page) = self.pages.first() {
-            dbg!(&first_page.size());
             if id < first_page.header.start {
                 let mut first_page = self.pages.pop_first().unwrap();
                 first_page.insert(Record { id, val });
@@ -214,7 +228,6 @@ impl DB {
 
         // handle append
         if let Some(last_page) = self.pages.last() {
-            dbg!(&last_page.size());
             if id > last_page.header.end {
                 let mut last_page = self.pages.pop_last().unwrap();
                 last_page.insert(Record { id, val });
@@ -260,7 +273,6 @@ impl DB {
 
         self.pages.remove(&fetched_page);
         fetched_page.insert(Record { id, val });
-        dbg!(&fetched_page.size());
 
         if fetched_page.size() > PAGE_SIZE {
             let (head, tail) = fetched_page.split();
@@ -350,6 +362,8 @@ mod tests {
         let mut db = DB::new_with_pages(pages, "tests/insert");
 
         db.insert(3.try_into().unwrap(), 3);
+        db.sync();
+
         assert_eq!(
             db.pages,
             BTreeSet::from_iter(vec![
@@ -412,6 +426,8 @@ mod tests {
             iter.push((i.try_into().unwrap(), i));
             db.insert(i.try_into().unwrap(), i);
         }
+
+        db.sync();
 
         assert_eq!(
             db.pages,
