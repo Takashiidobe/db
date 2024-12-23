@@ -84,6 +84,8 @@ impl DB {
                 let _ = f.write_all(&page.0.to_page_bytes());
             }
         }
+        // truncation is required otherwise the page might have stale pages that have been deleted.
+        let _ = self.file.set_len((self.pages.len() * PAGE_SIZE) as u64);
     }
 
     fn range_iter(&self, id: NonZeroU32) -> Range<(Page, Option<usize>)> {

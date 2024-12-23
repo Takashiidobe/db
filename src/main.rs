@@ -33,13 +33,13 @@ fn main() -> Result<()> {
 
         let mut wal_cache = BTreeMap::new();
 
-        for record in wal_records {
+        for record in &wal_records {
             match record {
                 WALRecord::Insert(id, val) => {
-                    wal_cache.insert(id, val);
+                    wal_cache.insert(*id, *val);
                 }
                 WALRecord::Delete(id) => {
-                    wal_cache.remove(&id);
+                    wal_cache.remove(id);
                 }
             }
         }
@@ -54,7 +54,7 @@ fn main() -> Result<()> {
             .append(true)
             .open(wal_file_name)
             .unwrap();
-        DB {
+        let mut db = DB {
             pages,
             file: db_file,
             wal: WAL {
@@ -62,16 +62,36 @@ fn main() -> Result<()> {
                 records: wal_cache,
             },
             epoch: 1,
-        }
+        };
+        db.sync();
+
+        db
     } else {
         DB::new(&file_name)
     };
+
+    let help_string = r#"Commands:
+Insert takes two u32s, comma delimited, and inserts them into the DB:
+insert $id, $val
+Get takes a u32, the id of the tuple to fetch:
+get $id
+Delete takes a u32, the id of the tuple to delete:
+delete $id
+Sync merges the WAL and pages together, and saves to disk. The WAL is then cleared.
+sync (clears the WAL and saves the DB to disk).
+Show shows the state of the database.
+show (shows database info)
+Exit quits the repl. This can also be done with CTRL-C or CTRL-D.
+exit (quits the repl)"#;
 
     loop {
         let readline = rl.readline(">> ");
         match readline {
             Ok(line) => {
                 rl.add_history_entry(line.as_str())?;
+                if line.trim() == "?" {
+                    println!("{}", help_string);
+                }
                 if line.starts_with("insert ") {
                     let copy = line.strip_prefix("insert ").unwrap();
                     let nums: Vec<u32> = copy.split(", ").map(|x| x.parse().unwrap()).collect();
