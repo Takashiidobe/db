@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{BufWriter, Seek as _, SeekFrom, Write as _},
     num::NonZeroU32,
@@ -8,10 +8,11 @@ use std::{
 use crate::{record::Record, wal::WAL};
 
 use crate::page::{Page, PageHeader, PAGE_SIZE};
+use indexset::{BTreeSet, Range};
 
 #[derive(Debug)]
 pub struct DB {
-    pub pages: BTreeSet<Page>,
+    pub pages: BTreeSet<(Page, Option<usize>)>,
     pub file: File,
     pub wal: WAL,
     pub epoch: u64,
@@ -32,7 +33,7 @@ impl DB {
         }
     }
 
-    pub fn new_with_pages(pages: BTreeSet<Page>, file_name: &str) -> Self {
+    pub fn new_with_pages(pages: BTreeSet<(Page, Option<usize>)>, file_name: &str) -> Self {
         let epoch = 1;
         let (db_file, wal_file) = Self::setup_files(file_name, epoch);
 
@@ -74,23 +75,44 @@ impl DB {
         self.wal.file.set_len(0).is_ok()
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut res = vec![];
-        for page in &self.pages {
-            res.extend(page.to_bytes());
-        }
-        res
-    }
-
     pub fn serialize(&self) {
         let mut f = BufWriter::new(&self.file);
         for (i, page) in self.pages.iter().enumerate() {
-            if page.dirty {
+            if page.0.dirty || page.1 != Some(i) {
                 let pos = SeekFrom::Start((i * PAGE_SIZE) as u64);
                 let _ = f.seek(pos);
-                let _ = f.write_all(&page.to_page_bytes());
+                let _ = f.write_all(&page.0.to_page_bytes());
             }
         }
+    }
+
+    fn range_iter(&self, id: NonZeroU32) -> Range<(Page, Option<usize>)> {
+        self.pages.range(
+            (
+                Page {
+                    header: PageHeader {
+                        end: id,
+                        start: NonZeroU32::MIN,
+                        count: u32::MIN,
+                    },
+                    dirty: false,
+                    data: BTreeMap::new(),
+                },
+                None,
+            )
+                ..=(
+                    Page {
+                        header: PageHeader {
+                            end: NonZeroU32::MAX,
+                            start: id,
+                            count: u32::MAX,
+                        },
+                        dirty: true,
+                        data: BTreeMap::new(),
+                    },
+                    Some(usize::MAX),
+                ),
+        )
     }
 
     pub fn get(&self, id: NonZeroU32) -> Option<u32> {
@@ -105,31 +127,10 @@ impl DB {
         }
 
         // otherwise, find the page where start <= id <= end
-        let mut range = self
-            .pages
-            .range(
-                Page {
-                    header: PageHeader {
-                        end: id,
-                        start: NonZeroU32::MIN,
-                        count: u32::MIN,
-                    },
-                    dirty: false,
-                    data: BTreeMap::new(),
-                }..=Page {
-                    header: PageHeader {
-                        end: NonZeroU32::MAX,
-                        start: id,
-                        count: u32::MAX,
-                    },
-                    dirty: true,
-                    data: BTreeMap::new(),
-                },
-            )
-            .rev();
+        let mut range = self.range_iter(id);
 
         match range.next() {
-            Some(next_page) => next_page.get(id).map(|Record { val, .. }| val),
+            Some(next_page) => next_page.0.get(id).map(|Record { val, .. }| val),
             None => None,
         }
     }
@@ -147,50 +148,29 @@ impl DB {
 
         // handle case when id is too small
         if let Some(first_page) = self.pages.first() {
-            if id < first_page.header.start {
+            if id < first_page.0.header.start {
                 return None;
             }
         }
 
         // handle case when id is too large
         if let Some(last_page) = self.pages.last() {
-            if id > last_page.header.end {
+            if id > last_page.0.header.end {
                 return None;
             }
         }
 
         // otherwise, find the page where start <= id <= end
-        let mut range = self
-            .pages
-            .range(
-                Page {
-                    header: PageHeader {
-                        end: id,
-                        start: NonZeroU32::MIN,
-                        count: u32::MIN,
-                    },
-                    dirty: false,
-                    data: BTreeMap::new(),
-                }..=Page {
-                    header: PageHeader {
-                        end: NonZeroU32::MAX,
-                        start: id,
-                        count: u32::MAX,
-                    },
-                    dirty: true,
-                    data: BTreeMap::new(),
-                },
-            )
-            .rev();
+        let mut range = self.range_iter(id);
 
         let next_page = range.next().unwrap();
-        let mut fetched_page: Page = next_page.clone();
+        let mut fetched_page = next_page.clone();
 
         self.pages.remove(&fetched_page);
-        let res = fetched_page.remove(id);
+        let res = fetched_page.0.remove(id);
 
         // if the page still has items, readd it in
-        if fetched_page.header.count != 0 {
+        if fetched_page.0.header.count != 0 {
             self.pages.insert(fetched_page);
         }
 
@@ -209,25 +189,25 @@ impl DB {
     fn insert_to_page(&mut self, id: NonZeroU32, val: u32) {
         // in case of an empty db
         if self.pages.is_empty() {
-            let new_page = Page::new_dirty(&[Record { id, val }]);
+            let new_page = (Page::new_dirty(&[Record { id, val }]), None);
             self.pages.insert(new_page);
             return;
         }
 
         // handle prepend
         if let Some(first_page) = self.pages.first() {
-            if id < first_page.header.start {
+            if id < first_page.0.header.start {
                 let mut first_page = self.pages.pop_first().unwrap();
-                first_page.insert(Record { id, val });
+                first_page.0.insert(Record { id, val });
                 self.pages.insert(first_page);
 
                 // split page that is too big
                 if let Some(first_page) = self.pages.first() {
-                    if first_page.size() > PAGE_SIZE {
-                        let (head, tail) = first_page.split();
+                    if first_page.0.size() > PAGE_SIZE {
+                        let (head, tail) = first_page.0.split();
                         self.pages.pop_first();
-                        self.pages.insert(head);
-                        self.pages.insert(tail);
+                        self.pages.insert((head, None));
+                        self.pages.insert((tail, None));
                     }
                 }
                 return;
@@ -236,69 +216,51 @@ impl DB {
 
         // handle append
         if let Some(last_page) = self.pages.last() {
-            if id > last_page.header.end {
+            if id > last_page.0.header.end {
                 let mut last_page = self.pages.pop_last().unwrap();
-                last_page.insert(Record { id, val });
+                last_page.0.insert(Record { id, val });
                 self.pages.insert(last_page);
                 // split page that is too big
                 if let Some(last_page) = self.pages.last() {
-                    if last_page.size() > PAGE_SIZE {
-                        let (head, tail) = last_page.split();
+                    if last_page.0.size() > PAGE_SIZE {
+                        let (head, tail) = last_page.0.split();
                         self.pages.pop_last();
-                        self.pages.insert(head);
-                        self.pages.insert(tail);
+                        self.pages.insert((head, None));
+                        self.pages.insert((tail, None));
                     }
                 }
                 return;
             }
         }
 
-        let mut range = self
-            .pages
-            .range(
-                Page {
-                    header: PageHeader {
-                        end: id,
-                        start: NonZeroU32::MIN,
-                        count: u32::MIN,
-                    },
-                    dirty: false,
-                    data: BTreeMap::new(),
-                }..=Page {
-                    header: PageHeader {
-                        end: NonZeroU32::MAX,
-                        start: id,
-                        count: u32::MAX,
-                    },
-                    dirty: true,
-                    data: BTreeMap::new(),
-                },
-            )
-            .rev();
+        let mut range = self.range_iter(id);
 
         let next_page = range.next().unwrap();
-        let mut fetched_page: Page = next_page.clone();
+        let mut fetched_page = next_page.clone();
 
         self.pages.remove(&fetched_page);
-        fetched_page.insert(Record { id, val });
+        fetched_page.0.insert(Record { id, val });
 
-        if fetched_page.size() > PAGE_SIZE {
-            let (head, tail) = fetched_page.split();
-            self.pages.insert(head);
-            self.pages.insert(tail);
+        if fetched_page.0.size() > PAGE_SIZE {
+            let (head, tail) = fetched_page.0.split();
+            self.pages.insert((head, None));
+            self.pages.insert((tail, None));
         } else {
             self.pages.insert(fetched_page);
         }
     }
 }
 
-pub fn deserialize(bytes: Vec<u8>) -> BTreeSet<Page> {
+pub fn deserialize(bytes: Vec<u8>) -> BTreeSet<(Page, Option<usize>)> {
     assert!(bytes.len() % PAGE_SIZE == 0);
 
-    let mut pages: Vec<Page> = vec![];
+    let mut pages = vec![];
 
     for i in 0..(bytes.len() / PAGE_SIZE) {
-        pages.push(Page::from_bytes(&bytes[i * PAGE_SIZE..(i + 1) * PAGE_SIZE]));
+        pages.push((
+            Page::from_bytes(&bytes[i * PAGE_SIZE..(i + 1) * PAGE_SIZE]),
+            Some(i),
+        ));
     }
 
     BTreeSet::from_iter(pages)
@@ -312,7 +274,7 @@ impl Drop for DB {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::HashSet, fs};
 
     use quickcheck_macros::quickcheck;
 
@@ -473,16 +435,17 @@ mod tests {
     }
 
     #[quickcheck]
-    fn fuzz_db_get(records: BTreeSet<NonZeroU32>) -> bool {
+    fn fuzz_db_get(records: Vec<NonZeroU32>) -> bool {
+        let records: HashSet<&NonZeroU32> = HashSet::from_iter(&records);
         let mut db = DB::new("tests/fuzz_db_get");
 
         for val in &records {
-            db.insert(*val, val.get());
+            db.insert(**val, val.get());
         }
 
         records
             .into_iter()
-            .map(|id| db.get(id) == Some(id.get()))
+            .map(|id| db.get(*id) == Some(id.get()))
             .all(|f| f)
     }
 }
