@@ -74,6 +74,14 @@ impl DB {
         self.wal.file.set_len(0).is_ok()
     }
 
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut res = vec![];
+        for page in &self.pages {
+            res.extend(page.to_bytes());
+        }
+        res
+    }
+
     pub fn serialize(&self) {
         let mut f = BufWriter::new(&self.file);
         for (i, page) in self.pages.iter().enumerate() {
@@ -201,7 +209,7 @@ impl DB {
     fn insert_to_page(&mut self, id: NonZeroU32, val: u32) {
         // in case of an empty db
         if self.pages.is_empty() {
-            let new_page = Page::new(&[Record { id, val }]);
+            let new_page = Page::new_dirty(&[Record { id, val }]);
             self.pages.insert(new_page);
             return;
         }
@@ -313,27 +321,37 @@ mod tests {
 
     #[test]
     fn read_write() {
-        let mut data = vec![];
+        let mut db = DB::new("tests/read_write");
 
-        for i in 1..10 {
-            data.push(Record {
-                id: NonZeroU32::new(i).unwrap(),
-                val: i,
-            });
+        for i in 1..=5 {
+            db.insert(NonZeroU32::new(i).unwrap(), i);
         }
 
-        let page = Page::new(&data);
-        let (head, tail) = page.split();
-
-        let pages = BTreeSet::from_iter(vec![head, tail]);
-
-        let file = DB::new_with_pages(pages, "tests/read_write");
-
-        file.serialize();
+        db.serialize();
+        db.sync();
 
         let bytes = fs::read("tests/read_write.1.db").unwrap();
 
-        assert_eq!(deserialize(bytes), file.pages)
+        let deserialized = deserialize(bytes);
+
+        assert_eq!(
+            deserialized,
+            BTreeSet::from_iter(vec![Page {
+                header: PageHeader {
+                    end: NonZeroU32::new(5).unwrap(),
+                    start: NonZeroU32::new(1).unwrap(),
+                    count: 5
+                },
+                data: BTreeMap::from([
+                    (NonZeroU32::new(1).unwrap(), 1),
+                    (NonZeroU32::new(2).unwrap(), 2),
+                    (NonZeroU32::new(3).unwrap(), 3),
+                    (NonZeroU32::new(4).unwrap(), 4),
+                    (NonZeroU32::new(5).unwrap(), 5)
+                ]),
+                dirty: false
+            }])
+        );
     }
 
     #[test]

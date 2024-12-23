@@ -64,6 +64,12 @@ impl Page {
         }
     }
 
+    pub fn new_dirty(data: &[Record]) -> Self {
+        let mut page = Page::new(data);
+        page.dirty = true;
+        page
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut res = self.header.to_bytes();
         for (id, val) in &self.data {
@@ -126,7 +132,7 @@ impl Page {
             .collect();
         let (head, tail) = vec_data.split_at(mid);
 
-        (Self::new(head), Self::new(tail))
+        (Self::new_dirty(head), Self::new_dirty(tail))
     }
 
     pub fn merge(&mut self, other: Page) {
@@ -136,7 +142,7 @@ impl Page {
             .into_iter()
             .map(|(id, val)| Record { id, val })
             .collect();
-        *self = Self::new(&vec_data)
+        *self = Self::new_dirty(&vec_data)
     }
 
     pub fn get(&self, id: NonZeroU32) -> Option<Record> {
@@ -229,7 +235,7 @@ mod tests {
         let (head, tail) = page.split();
         assert_eq!(
             head,
-            Page::new(&[
+            Page::new_dirty(&[
                 Record {
                     id: NonZero::new(1).unwrap(),
                     val: 10
@@ -242,7 +248,7 @@ mod tests {
         );
         assert_eq!(
             tail,
-            Page::new(&[
+            Page::new_dirty(&[
                 Record {
                     id: NonZero::new(3).unwrap(),
                     val: 30
@@ -277,9 +283,9 @@ mod tests {
         ];
         let (head, tail) = data.split_at(data.len() / 2);
 
-        let mut head = Page::new(head);
+        let mut head = Page::new_dirty(head);
         head.merge(Page::new(tail));
-        assert_eq!(head, Page::new(data));
+        assert_eq!(head, Page::new_dirty(data));
     }
 
     #[test]
@@ -335,7 +341,8 @@ mod tests {
         let mut head = Page::new(&data);
         head.insert(record_to_add);
         data.push(record_to_add);
-        assert_eq!(head, Page::new(&data));
+
+        assert_eq!(head, Page::new_dirty(&data));
     }
 
     #[test]
@@ -364,7 +371,7 @@ mod tests {
         let mut head = Page::new(&data);
         head.remove(id_to_remove);
         data.pop();
-        assert_eq!(head, Page::new(&data));
+        assert_eq!(head, Page::new_dirty(&data));
     }
 
     #[test]
@@ -407,7 +414,7 @@ mod tests {
         if records.len() >= u32::MAX as usize {
             return true;
         }
-        let page = Page::new(&records);
+        let page = Page::new_dirty(&records);
         let (mut head, tail) = page.split();
         head.merge(tail);
         head == page
