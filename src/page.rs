@@ -49,27 +49,23 @@ pub const PAGE_SIZE: usize = if cfg!(feature = "small_pages") {
 
 impl Page {
     pub fn new(data: &[Vec<RowVal>], schema: &[RowType]) -> Self {
-        let mut size: usize = 0;
-        for row in data {
-            for cell in row {
-                size += cell.size() as usize;
-            }
-        }
+        let size = data
+            .iter()
+            .flat_map(|r| r.iter().map(|c| c.size()))
+            .sum::<u16>() as usize;
         let data = BTreeMap::from_iter(data.iter().map(|row| {
             let (id, vals) = split_row(row);
             (id, vals.to_vec())
         }));
 
-        let start = data
+        let start = *data
             .first_key_value()
             .unwrap_or((&1.try_into().unwrap(), &vec![]))
-            .0
-            .clone();
-        let end = data
+            .0;
+        let end = *data
             .last_key_value()
             .unwrap_or((&1.try_into().unwrap(), &vec![]))
-            .0
-            .clone();
+            .0;
 
         let header = PageHeader {
             count: data.len() as u32,
@@ -88,7 +84,12 @@ impl Page {
 
     pub fn new_dirty(data: &[Vec<RowVal>], schema: &[RowType]) -> Self {
         let mut page = Page::new(data, schema);
+        let page_size = data
+            .iter()
+            .flat_map(|r| r.iter().map(|c| c.size()))
+            .sum::<u16>() as usize;
         page.dirty = true;
+        page.size = page_size;
         page
     }
 

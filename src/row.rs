@@ -152,7 +152,7 @@ pub fn bytes_to_values(bytes: &[u8], schema: &[RowType]) -> (Vec<RowVal>, usize)
             }
             RowType::Bytes => {
                 let len = u16::from_le_bytes(bytes[i..i + 2].try_into().unwrap()) as usize;
-                res.push(RowVal::from_bytes(&bytes[i..i + len + 2], RowType::Bytes));
+                res.push(RowVal::from_bytes(&bytes[i..], RowType::Bytes));
                 i += 2 + len;
             }
             RowType::Bool => {

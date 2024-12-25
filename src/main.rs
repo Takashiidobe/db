@@ -26,13 +26,15 @@ fn main() -> Result<()> {
     let wal_file_name = format!("{file_name}.1.wal");
     let schema_file_name = format!("{file_name}.1.schema");
 
-    let mut db = if fs::exists(&db_file_name).unwrap() {
+    let mut db = None;
+
+    if fs::exists(&db_file_name).unwrap() {
         let schema_bytes = fs::read(&schema_file_name).unwrap();
         let schema = schema_from_bytes(&schema_bytes);
         let schema_file = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(schema_file_name)
+            .open(&schema_file_name)
             .unwrap();
         let schema = Schema {
             schema,
@@ -68,7 +70,7 @@ fn main() -> Result<()> {
             .append(true)
             .open(wal_file_name)
             .unwrap();
-        let mut db = DB {
+        let mut old_db = DB {
             pages,
             file: db_file,
             wal: WAL {
@@ -78,25 +80,10 @@ fn main() -> Result<()> {
             epoch: 1,
             schema,
         };
-        db.sync();
+        old_db.sync();
 
-        db
-    } else {
-        let schema_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(schema_file_name)
-            .unwrap();
-        let schema = Schema {
-            schema: vec![RowType::Id, RowType::U32, RowType::Bytes, RowType::Bool],
-            file: schema_file,
-        };
-
-        DB::new(&file_name, schema)
-    };
-
+        db = Some(old_db);
+    }
     let help_string = r#"Commands:
 Insert takes two u32s, comma delimited, and inserts them into the DB:
 insert $id, $val
@@ -118,8 +105,32 @@ exit (quits the repl)"#;
                 rl.add_history_entry(line.as_str())?;
                 if line.trim() == "?" {
                     println!("{}", help_string);
+                    continue;
+                }
+                if line.starts_with("create ") {
+                    let trimmed = line.strip_prefix("create ").unwrap();
+                    let schema_types = parse_create_table(trimmed);
+                    let schema_file = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&schema_file_name)
+                        .unwrap();
+
+                    let schema = Schema {
+                        schema: schema_types,
+                        file: schema_file,
+                    };
+
+                    db = Some(DB::new("test", schema));
+                    continue;
+                }
+                if line.trim() == "exit" {
+                    break;
                 }
                 if line.starts_with("insert ") {
+                    let db = db.as_mut().unwrap();
                     let copy = line.strip_prefix("insert ").unwrap();
                     let vals: Vec<&str> = copy.split(", ").collect();
                     let id = vals[0].parse().unwrap();
@@ -131,6 +142,7 @@ exit (quits the repl)"#;
                     }
                 }
                 if line.starts_with("get ") {
+                    let db = db.as_ref().unwrap();
                     let copy = line.strip_prefix("get ").unwrap();
                     let id: u32 = copy.parse().unwrap();
                     if let Some(val) = db.get(id.try_into().unwrap()) {
@@ -149,6 +161,7 @@ exit (quits the repl)"#;
                     }
                 }
                 if line.starts_with("delete ") {
+                    let db = db.as_mut().unwrap();
                     let copy = line.strip_prefix("delete ").unwrap();
                     let id: u32 = copy.parse().unwrap();
                     if let Some(val) = db.remove(id.try_into().unwrap()) {
@@ -167,6 +180,7 @@ exit (quits the repl)"#;
                     }
                 }
                 if line.starts_with("show") {
+                    let db = db.as_ref().unwrap();
                     println!("Pages: ");
                     println!("{:?}", db.pages);
                     println!("WAL: ");
@@ -175,10 +189,8 @@ exit (quits the repl)"#;
                     println!("{:?}", db.schema);
                 }
                 if line.starts_with("sync") {
+                    let db = db.as_mut().unwrap();
                     db.sync();
-                }
-                if line.trim() == "exit" {
-                    break;
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) | Err(_) => {
@@ -204,6 +216,23 @@ pub fn verify_insert(vals: &[RowVal], schema: &[RowType]) -> bool {
         }
     }
     true
+}
+
+pub fn parse_create_table(s: &str) -> Vec<RowType> {
+    let mut res = vec![];
+
+    for column_type in s.split(", ") {
+        let t = column_type.trim();
+        match t {
+            "bool" => res.push(RowType::Bool),
+            "id" => res.push(RowType::Id),
+            "string" => res.push(RowType::Bytes),
+            "u32" => res.push(RowType::U32),
+            _ => todo!(),
+        }
+    }
+
+    res
 }
 
 pub fn parse_vals(vals: &[&str]) -> Vec<RowVal> {

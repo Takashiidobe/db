@@ -52,7 +52,7 @@ pub fn deserialize_wal(bytes: &[u8], schema: &[RowType]) -> Vec<WALRecord> {
     }
 
     while i < bytes.len() - 4 {
-        let (wal_record, incr) = WALRecord::from_bytes(&bytes[i * 8..(i + 1) * 8], schema);
+        let (wal_record, incr) = WALRecord::from_bytes(&bytes[i..], schema);
         records.push(wal_record);
         i += incr;
     }
