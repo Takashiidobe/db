@@ -1,59 +1,60 @@
 use std::{collections::BTreeMap, fs::File, io::Write, num::NonZeroU32};
 
-use crate::utils::bytes_to_u32;
+use crate::row::{bytes_to_id, bytes_to_values, RowType, RowVal};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WALRecord {
-    Insert(NonZeroU32, u32),
+    Insert(NonZeroU32, Vec<RowVal>),
     Delete(NonZeroU32),
 }
 
-// serialize and deserialize a WAL Record
 impl WALRecord {
-    pub fn from_bytes(bytes: &[u8; 8]) -> Self {
-        if bytes_to_u32(&bytes[0..4]) == 0 {
-            let id = bytes_to_u32(&bytes[4..8]);
-            if id == 0 {
-                panic!("Invalid id of 0 to delete provided");
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            WALRecord::Insert(id, row) => {
+                let mut res = vec![];
+                res.extend(id.get().to_le_bytes());
+                let row_val: Vec<_> = row.iter().flat_map(|x| x.clone().to_bytes()).collect();
+                res.extend(row_val);
+                res
             }
-            Self::Delete(id.try_into().unwrap())
-        } else {
-            Self::Insert(
-                bytes_to_u32(&bytes[0..4]).try_into().unwrap(),
-                bytes_to_u32(&bytes[4..8]),
-            )
+            WALRecord::Delete(id) => {
+                let mut res = vec![0, 0, 0, 0];
+                res.extend(id.get().to_le_bytes());
+                res
+            }
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        match self {
-            WALRecord::Insert(id, val) => {
-                let mut bytes = vec![];
-
-                bytes.extend(id.get().to_le_bytes());
-                bytes.extend(val.to_le_bytes());
-
-                bytes
+    pub fn from_bytes(bytes: &[u8], schema: &[RowType]) -> (Self, usize) {
+        match bytes[0..4] {
+            [0, 0, 0, 0] => {
+                let id = bytes_to_id(&bytes[4..8]);
+                (WALRecord::Delete(id), 8)
             }
-            WALRecord::Delete(id) => {
-                let mut bytes = vec![];
-                bytes.extend(0u32.to_le_bytes());
-                bytes.extend(id.get().to_le_bytes());
-                bytes
+            _ => {
+                let (rows, incr) = bytes_to_values(bytes, schema);
+                if let RowVal::Id(id) = rows[0] {
+                    return (WALRecord::Insert(id, rows[1..].to_vec()), incr + 4);
+                }
+                panic!("Id must be the first row in the byte array")
             }
         }
     }
 }
 
-pub fn deserialize_wal(bytes: &[u8]) -> Vec<WALRecord> {
-    assert!(bytes.len() % 8 == 0);
-
+pub fn deserialize_wal(bytes: &[u8], schema: &[RowType]) -> Vec<WALRecord> {
     let mut records = vec![];
+    let mut i = 0;
 
-    for i in 0..(bytes.len() / 8) {
-        records.push(WALRecord::from_bytes(
-            &bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
-        ));
+    if bytes.len() < 4 {
+        return records;
+    }
+
+    while i < bytes.len() - 4 {
+        let (wal_record, incr) = WALRecord::from_bytes(&bytes[i * 8..(i + 1) * 8], schema);
+        records.push(wal_record);
+        i += incr;
     }
 
     records
@@ -63,21 +64,23 @@ pub fn deserialize_wal(bytes: &[u8]) -> Vec<WALRecord> {
 #[derive(Debug)]
 pub struct WAL {
     pub file: File,
-    pub records: BTreeMap<NonZeroU32, u32>,
+    pub records: BTreeMap<NonZeroU32, Vec<RowVal>>,
 }
 
 impl WAL {
-    pub fn insert(&mut self, id: NonZeroU32, val: u32) -> bool {
-        self.records.insert(id, val);
-        let _ = self.file.write_all(&WALRecord::Insert(id, val).to_bytes());
+    pub fn insert(&mut self, id: NonZeroU32, values: &[RowVal]) -> bool {
+        self.records.insert(id, values.to_vec());
+        let _ = self
+            .file
+            .write_all(&WALRecord::Insert(id, values.to_vec()).to_bytes());
         true
     }
-    pub fn remove(&mut self, id: NonZeroU32) -> Option<u32> {
+    pub fn remove(&mut self, id: NonZeroU32) -> Option<Vec<RowVal>> {
         let res = self.records.remove(&id);
         let _ = self.file.write_all(&WALRecord::Delete(id).to_bytes());
         res
     }
-    pub fn get(&self, id: NonZeroU32) -> Option<u32> {
-        self.records.get(&id).copied()
+    pub fn get(&self, id: NonZeroU32) -> Option<Vec<RowVal>> {
+        self.records.get(&id).cloned()
     }
 }

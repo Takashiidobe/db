@@ -1,4 +1,7 @@
-use crate::{record::Record, utils::bytes_to_u32};
+use crate::{
+    row::{bytes_to_values, split_row, RowType, RowVal},
+    utils::bytes_to_u32,
+};
 use std::{collections::BTreeMap, num::NonZeroU32};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,28 +35,41 @@ impl PageHeader {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Page {
     pub header: PageHeader,
-    pub data: BTreeMap<NonZeroU32, u32>,
+    pub data: BTreeMap<NonZeroU32, Vec<RowVal>>,
     pub dirty: bool,
+    pub size: usize,
+    pub schema: Vec<RowType>,
 }
 
 pub const PAGE_SIZE: usize = if cfg!(feature = "small_pages") {
-    28
+    56
 } else {
     4096
 };
 
 impl Page {
-    pub fn new(data: &[Record]) -> Self {
-        let data = BTreeMap::from_iter(data.iter().map(|record| (record.id, record.val)));
+    pub fn new(data: &[Vec<RowVal>], schema: &[RowType]) -> Self {
+        let mut size: usize = 0;
+        for row in data {
+            for cell in row {
+                size += cell.size() as usize;
+            }
+        }
+        let data = BTreeMap::from_iter(data.iter().map(|row| {
+            let (id, vals) = split_row(row);
+            (id, vals.to_vec())
+        }));
 
-        let start = *data
+        let start = data
             .first_key_value()
-            .unwrap_or((&1.try_into().unwrap(), &0))
-            .0;
-        let end = *data
+            .unwrap_or((&1.try_into().unwrap(), &vec![]))
+            .0
+            .clone();
+        let end = data
             .last_key_value()
-            .unwrap_or((&1.try_into().unwrap(), &0))
-            .0;
+            .unwrap_or((&1.try_into().unwrap(), &vec![]))
+            .0
+            .clone();
 
         let header = PageHeader {
             count: data.len() as u32,
@@ -65,27 +81,35 @@ impl Page {
             header,
             data,
             dirty: false,
+            size,
+            schema: schema.to_vec(),
         }
     }
 
-    pub fn new_dirty(data: &[Record]) -> Self {
-        let mut page = Page::new(data);
+    pub fn new_dirty(data: &[Vec<RowVal>], schema: &[RowType]) -> Self {
+        let mut page = Page::new(data, schema);
         page.dirty = true;
         page
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut res = self.header.to_bytes();
-        for (id, val) in &self.data {
-            res.extend(Record { id: *id, val: *val }.to_bytes());
+        for (id, row) in &self.data {
+            res.extend(id.get().to_le_bytes());
+            for cell in row {
+                res.extend(cell.clone().to_bytes());
+            }
         }
         res
     }
 
     pub fn to_page_bytes(&self) -> Vec<u8> {
         let mut res = self.header.to_bytes();
-        for (id, val) in &self.data {
-            res.extend(Record { id: *id, val: *val }.to_bytes());
+        for (id, row) in &self.data {
+            res.extend(id.get().to_le_bytes());
+            for cell in row {
+                res.extend(cell.clone().to_bytes());
+            }
         }
         if res.len() > PAGE_SIZE {
             panic!("The page is larger than the page boundary");
@@ -95,7 +119,7 @@ impl Page {
         res
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Self {
+    pub fn from_bytes(bytes: &[u8], schema: &[RowType]) -> Self {
         let header_bytes: &[u8; 12] = bytes[0..12].try_into().unwrap();
 
         let header = PageHeader::from_bytes(header_bytes);
@@ -104,17 +128,16 @@ impl Page {
         let mut offset = PageHeader::size();
 
         for _ in 0..header.count {
-            let record_bytes: &[u8; 8] = bytes[offset..offset + 8].try_into().unwrap();
-            let record = Record::from_bytes(record_bytes);
-            data.push(record);
-            offset += 8;
+            let (row_val, incr) = bytes_to_values(&bytes[offset..], schema);
+            data.push(row_val);
+            offset += incr;
         }
 
-        Page::new(&data)
+        Page::new(&data, schema)
     }
 
     pub fn size(&self) -> usize {
-        std::mem::size_of::<Record>() * self.data.len() + PageHeader::size()
+        self.size
     }
 
     pub fn len(&self) -> usize {
@@ -128,40 +151,52 @@ impl Page {
     pub fn split(&self) -> (Self, Self) {
         let len = self.len();
         let mid = len / 2;
-        let vec_data: Vec<Record> = self
+        let vec_data: Vec<Vec<RowVal>> = self
             .data
             .clone()
             .into_iter()
-            .map(|(id, val)| Record { id, val })
+            .map(|(id, row_values)| {
+                let mut res = vec![RowVal::Id(id)];
+                res.extend(row_values);
+                res
+            })
             .collect();
         let (head, tail) = vec_data.split_at(mid);
 
-        (Self::new_dirty(head), Self::new_dirty(tail))
+        (
+            Self::new_dirty(head, &self.schema),
+            Self::new_dirty(tail, &self.schema),
+        )
     }
 
     pub fn merge(&mut self, other: Page) {
         let mut new_data = self.data.clone();
         new_data.extend(other.data);
-        let vec_data: Vec<Record> = new_data
+        let vec_data: Vec<Vec<RowVal>> = new_data
             .into_iter()
-            .map(|(id, val)| Record { id, val })
+            .map(|(id, row_values)| {
+                let mut res = vec![RowVal::Id(id)];
+                res.extend(row_values);
+                res
+            })
             .collect();
-        *self = Self::new_dirty(&vec_data)
+        *self = Self::new_dirty(&vec_data, &self.schema)
     }
 
-    pub fn get(&self, id: NonZeroU32) -> Option<Record> {
-        self.data.get(&id).map(|val| Record { id, val: *val })
+    pub fn get(&self, id: NonZeroU32) -> Option<Vec<RowVal>> {
+        self.data.get(&id).map(|values| values).cloned()
     }
 
-    pub fn insert(&mut self, record: Record) {
-        self.header.start = self.header.start.min(record.id);
-        self.header.end = self.header.end.max(record.id);
+    pub fn insert(&mut self, row: &[RowVal]) {
+        let (id, values) = split_row(row);
+        self.header.start = self.header.start.min(id);
+        self.header.end = self.header.end.max(id);
         self.dirty = true;
-        self.data.insert(record.id, record.val);
+        self.data.insert(id, values.to_vec());
         self.header.count = self.data.len() as u32;
     }
 
-    pub fn remove(&mut self, id: NonZeroU32) -> Option<u32> {
+    pub fn remove(&mut self, id: NonZeroU32) -> Option<Vec<RowVal>> {
         match self.data.remove(&id) {
             Some(val) => {
                 self.header.start = match self.data.first_key_value() {

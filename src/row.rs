@@ -1,4 +1,6 @@
-use std::num::NonZeroU32;
+use std::{fmt::Display, fs::File, io::Write as _, num::NonZeroU32};
+
+use crate::wal::WALRecord;
 
 pub fn to_bytes_bool(b: bool) -> [u8; 1] {
     match b {
@@ -64,6 +66,17 @@ pub enum RowVal {
     Bool(bool),
 }
 
+impl Display for RowVal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RowVal::Id(id) => f.write_str(&id.get().to_string()),
+            RowVal::U32(num) => f.write_str(&num.to_string()),
+            RowVal::Bytes(bytes) => f.write_str(&format!("\"{}\"", String::from_utf8_lossy(bytes))),
+            RowVal::Bool(b) => f.write_str(&b.to_string()),
+        }
+    }
+}
+
 impl RowVal {
     pub fn to_bytes(self) -> Vec<u8> {
         match self {
@@ -92,6 +105,17 @@ impl RowVal {
                     .try_into()
                     .unwrap(),
             ),
+        }
+    }
+
+    pub fn size(&self) -> u16 {
+        match self {
+            RowVal::Id(_) | RowVal::U32(_) => 4,
+            RowVal::Bytes(b) => {
+                let len = b.len() as u16;
+                len + 2
+            }
+            RowVal::Bool(_) => 1,
         }
     }
 }
@@ -141,18 +165,23 @@ pub fn bytes_to_values(bytes: &[u8], schema: &[RowType]) -> (Vec<RowVal>, usize)
     (res, i)
 }
 
-pub fn bytes_to_actions(bytes: &[u8], schema: &[RowType]) -> Vec<Action> {
+pub fn bytes_to_actions(bytes: &[u8], schema: &[RowType]) -> Vec<WALRecord> {
     let mut res = vec![];
     let mut i = 0;
     // for each set of bytes, we want to increment i by some length and index into it
     while i < bytes.len() - 4 {
         if bytes[i..i + 4] != [0, 0, 0, 0] {
             let (row, incr) = bytes_to_values(bytes, schema);
-            res.push(Action::Insert(row));
-            i += incr;
+            let (id, values) = row.split_first().unwrap();
+            if let RowVal::Id(id) = id {
+                res.push(WALRecord::Insert(*id, values.to_vec()));
+                i += incr;
+            } else {
+                panic!("the first value must be an id");
+            }
         } else {
             let id = bytes_to_id(&bytes[i + 4..i + 8]);
-            res.push(Action::Delete(id));
+            res.push(WALRecord::Delete(id));
             i += 8;
         }
     }
@@ -160,39 +189,32 @@ pub fn bytes_to_actions(bytes: &[u8], schema: &[RowType]) -> Vec<Action> {
     res
 }
 
+#[derive(Debug)]
+pub struct Schema {
+    pub schema: Vec<RowType>,
+    pub file: File,
+}
+
+impl Drop for Schema {
+    fn drop(&mut self) {
+        let schema_bytes = schema_to_bytes(&self.schema);
+        let _ = self.file.write_all(&schema_bytes);
+        let _ = self.file.set_len(schema_bytes.len() as u64);
+    }
+}
+
 pub fn values_to_bytes(values: &[RowVal]) -> Vec<u8> {
     values.iter().flat_map(|x| x.clone().to_bytes()).collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Action {
-    Insert(Vec<RowVal>),
-    Delete(NonZeroU32),
-}
-
-impl Action {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        match self {
-            Action::Insert(row) => row.iter().flat_map(|x| x.clone().to_bytes()).collect(),
-            Action::Delete(id) => {
-                let mut res = vec![0, 0, 0, 0];
-                res.extend(id.get().to_le_bytes());
-                res
-            }
-        }
+pub fn split_row(row: &[RowVal]) -> (NonZeroU32, &[RowVal]) {
+    if row.is_empty() {
+        panic!("Cannot split empty row");
     }
 
-    pub fn from_bytes(bytes: &[u8], schema: &[RowType]) -> Self {
-        match bytes[0..4] {
-            [0, 0, 0, 0] => {
-                let id = bytes_to_id(&bytes[4..8]);
-                Action::Delete(id)
-            }
-            _ => {
-                let rows = bytes_to_values(bytes, schema).0;
-                Action::Insert(rows)
-            }
-        }
+    match row[0] {
+        RowVal::Id(id) => (id, &row[1..]),
+        _ => panic!("The first item of a row must be an id"),
     }
 }
 
@@ -233,7 +255,10 @@ mod tests {
             RowVal::U32(n),
         ];
 
-        let actions = vec![Action::Insert(vals), Action::Delete(1.try_into().unwrap())];
+        let actions = vec![
+            WALRecord::Insert(vals),
+            WALRecord::Delete(1.try_into().unwrap()),
+        ];
 
         let action_bytes: Vec<_> = actions.iter().flat_map(|x| x.to_bytes()).collect();
         let schema = &[RowType::Id, RowType::Bytes, RowType::Bool, RowType::U32];

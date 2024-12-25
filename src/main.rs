@@ -4,6 +4,7 @@ use std::fs::{self, OpenOptions};
 
 use db::db::{deserialize, DB};
 
+use db::row::{schema_from_bytes, RowType, RowVal, Schema};
 use db::wal::{deserialize_wal, WALRecord, WAL};
 use rustyline::error::ReadlineError;
 use rustyline::{Config, DefaultEditor, EditMode, Result};
@@ -23,20 +24,33 @@ fn main() -> Result<()> {
 
     let db_file_name = format!("{file_name}.1.db");
     let wal_file_name = format!("{file_name}.1.wal");
+    let schema_file_name = format!("{file_name}.1.schema");
 
     let mut db = if fs::exists(&db_file_name).unwrap() {
+        let schema_bytes = fs::read(&schema_file_name).unwrap();
+        let schema = schema_from_bytes(&schema_bytes);
+        let schema_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(schema_file_name)
+            .unwrap();
+        let schema = Schema {
+            schema,
+            file: schema_file,
+        };
+
         let page_bytes = fs::read(&db_file_name).unwrap();
-        let pages = deserialize(page_bytes);
+        let pages = deserialize(page_bytes, &schema.schema);
 
         let wal_bytes = fs::read(&wal_file_name).unwrap();
-        let wal_records = deserialize_wal(&wal_bytes);
+        let wal_records = deserialize_wal(&wal_bytes, &schema.schema);
 
         let mut wal_cache = BTreeMap::new();
 
         for record in &wal_records {
             match record {
                 WALRecord::Insert(id, val) => {
-                    wal_cache.insert(*id, *val);
+                    wal_cache.insert(*id, val.to_vec());
                 }
                 WALRecord::Delete(id) => {
                     wal_cache.remove(id);
@@ -62,12 +76,25 @@ fn main() -> Result<()> {
                 records: wal_cache,
             },
             epoch: 1,
+            schema,
         };
         db.sync();
 
         db
     } else {
-        DB::new(&file_name)
+        let schema_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(schema_file_name)
+            .unwrap();
+        let schema = Schema {
+            schema: vec![RowType::Id, RowType::U32, RowType::Bytes, RowType::Bool],
+            file: schema_file,
+        };
+
+        DB::new(&file_name, schema)
     };
 
     let help_string = r#"Commands:
@@ -94,14 +121,29 @@ exit (quits the repl)"#;
                 }
                 if line.starts_with("insert ") {
                     let copy = line.strip_prefix("insert ").unwrap();
-                    let nums: Vec<u32> = copy.split(", ").map(|x| x.parse().unwrap()).collect();
-                    db.insert(nums[0].try_into().unwrap(), nums[1]);
+                    let vals: Vec<&str> = copy.split(", ").collect();
+                    let id = vals[0].parse().unwrap();
+                    let vals = parse_vals(&vals[1..]);
+                    if verify_insert(&vals, &db.schema.schema) {
+                        db.insert(id, &vals);
+                    } else {
+                        println!("Schema did not match, rejecting insert.");
+                    }
                 }
                 if line.starts_with("get ") {
                     let copy = line.strip_prefix("get ").unwrap();
                     let id: u32 = copy.parse().unwrap();
                     if let Some(val) = db.get(id.try_into().unwrap()) {
-                        println!("{val}");
+                        let mut res = String::new();
+                        res.push_str(&format!("{id}: ["));
+                        for v in val {
+                            res.push_str(&v.to_string());
+                            res.push_str(", ");
+                        }
+                        res.pop();
+                        res.pop();
+                        res.push(']');
+                        println!("{}", res);
                     } else {
                         println!("Key {id} not found.");
                     }
@@ -110,7 +152,16 @@ exit (quits the repl)"#;
                     let copy = line.strip_prefix("delete ").unwrap();
                     let id: u32 = copy.parse().unwrap();
                     if let Some(val) = db.remove(id.try_into().unwrap()) {
-                        println!("removed: {val}");
+                        let mut res = String::new();
+                        res.push_str(&format!("Removing {id}: ["));
+                        for v in val {
+                            res.push_str(&v.to_string());
+                            res.push_str(", ");
+                        }
+                        res.pop();
+                        res.pop();
+                        res.push(']');
+                        println!("{}", res);
                     } else {
                         println!("Key {id} not found.");
                     }
@@ -120,6 +171,8 @@ exit (quits the repl)"#;
                     println!("{:?}", db.pages);
                     println!("WAL: ");
                     println!("{:?}", db.wal);
+                    println!("Schema: ");
+                    println!("{:?}", db.schema);
                 }
                 if line.starts_with("sync") {
                     db.sync();
@@ -135,4 +188,43 @@ exit (quits the repl)"#;
     }
     drop(db);
     rl.save_history("history.txt")
+}
+
+pub fn verify_insert(vals: &[RowVal], schema: &[RowType]) -> bool {
+    if vals.len() != schema.len() - 1 {
+        return false;
+    }
+    for i in 0..vals.len() {
+        match (&vals[i], &schema[i + 1]) {
+            (RowVal::Id(_), RowType::Id)
+            | (RowVal::U32(_), RowType::U32)
+            | (RowVal::Bytes(_), RowType::Bytes)
+            | (RowVal::Bool(_), RowType::Bool) => continue,
+            _ => return false,
+        }
+    }
+    true
+}
+
+pub fn parse_vals(vals: &[&str]) -> Vec<RowVal> {
+    let mut res = vec![];
+    for val in vals {
+        let trimmed = val.trim();
+        // string
+        if trimmed.starts_with('"') {
+            let bytes = trimmed
+                .strip_prefix('"')
+                .unwrap()
+                .strip_suffix('"')
+                .unwrap();
+            res.push(RowVal::Bytes(bytes.into()));
+        } else if trimmed == "false" {
+            res.push(RowVal::Bool(false));
+        } else if trimmed == "true" {
+            res.push(RowVal::Bool(true));
+        } else {
+            res.push(RowVal::U32(trimmed.parse().unwrap()));
+        }
+    }
+    res
 }

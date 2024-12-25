@@ -5,7 +5,10 @@ use std::{
     num::NonZeroU32,
 };
 
-use crate::{record::Record, wal::WAL};
+use crate::{
+    row::{RowType, RowVal, Schema},
+    wal::WAL,
+};
 
 use crate::page::{Page, PageHeader, PAGE_SIZE};
 use indexset::{BTreeSet, Range};
@@ -16,10 +19,11 @@ pub struct DB {
     pub file: File,
     pub wal: WAL,
     pub epoch: u64,
+    pub schema: Schema,
 }
 
 impl DB {
-    pub fn new(file_name: &str) -> Self {
+    pub fn new(file_name: &str, schema: Schema) -> Self {
         let epoch = 1;
         let (db_file, wal_file) = Self::setup_files(file_name, epoch);
         Self {
@@ -30,10 +34,15 @@ impl DB {
                 records: BTreeMap::new(),
             },
             epoch,
+            schema,
         }
     }
 
-    pub fn new_with_pages(pages: BTreeSet<(Page, Option<usize>)>, file_name: &str) -> Self {
+    pub fn new_with_pages(
+        pages: BTreeSet<(Page, Option<usize>)>,
+        file_name: &str,
+        schema: Schema,
+    ) -> Self {
         let epoch = 1;
         let (db_file, wal_file) = Self::setup_files(file_name, epoch);
 
@@ -45,6 +54,7 @@ impl DB {
                 records: BTreeMap::new(),
             },
             epoch,
+            schema,
         }
     }
 
@@ -67,7 +77,7 @@ impl DB {
     pub fn sync(&mut self) -> bool {
         // apply all updates in wal to pages
         for (id, val) in self.wal.records.clone() {
-            self.insert_to_page(id, val);
+            self.insert_to_page(id, &val);
         }
 
         self.serialize();
@@ -99,6 +109,8 @@ impl DB {
                     },
                     dirty: false,
                     data: BTreeMap::new(),
+                    size: 0,
+                    schema: vec![],
                 },
                 None,
             )
@@ -111,13 +123,15 @@ impl DB {
                         },
                         dirty: true,
                         data: BTreeMap::new(),
+                        size: usize::MAX,
+                        schema: vec![],
                     },
                     Some(usize::MAX),
                 ),
         )
     }
 
-    pub fn get(&self, id: NonZeroU32) -> Option<u32> {
+    pub fn get(&self, id: NonZeroU32) -> Option<Vec<RowVal>> {
         // check wal first
         if let Some(val) = self.wal.get(id) {
             return Some(val);
@@ -132,12 +146,12 @@ impl DB {
         let mut range = self.range_iter(id);
 
         match range.next() {
-            Some(next_page) => next_page.0.get(id).map(|Record { val, .. }| val),
+            Some(next_page) => next_page.0.get(id),
             None => None,
         }
     }
 
-    pub fn remove(&mut self, id: NonZeroU32) -> Option<u32> {
+    pub fn remove(&mut self, id: NonZeroU32) -> Option<Vec<RowVal>> {
         // if in wal, remove from wal
         if let Some(val) = self.wal.remove(id) {
             return Some(val);
@@ -179,7 +193,7 @@ impl DB {
         res
     }
 
-    pub fn insert(&mut self, id: NonZeroU32, val: u32) {
+    pub fn insert(&mut self, id: NonZeroU32, val: &[RowVal]) {
         // if in wal, insert into wal
         if self.wal.insert(id, val) {
             return;
@@ -188,10 +202,15 @@ impl DB {
         self.insert_to_page(id, val)
     }
 
-    fn insert_to_page(&mut self, id: NonZeroU32, val: u32) {
+    fn insert_to_page(&mut self, id: NonZeroU32, val: &[RowVal]) {
+        let mut new_record = vec![RowVal::Id(id)];
+        new_record.extend_from_slice(val);
+        let row_size = val.iter().map(|x| x.size()).sum::<u16>() as usize + 4;
+
         // in case of an empty db
         if self.pages.is_empty() {
-            let new_page = (Page::new_dirty(&[Record { id, val }]), None);
+            let mut new_page = (Page::new_dirty(&[new_record], &self.schema.schema), None);
+            new_page.0.size += row_size;
             self.pages.insert(new_page);
             return;
         }
@@ -200,7 +219,8 @@ impl DB {
         if let Some(first_page) = self.pages.first() {
             if id < first_page.0.header.start {
                 let mut first_page = self.pages.pop_first().unwrap();
-                first_page.0.insert(Record { id, val });
+                first_page.0.size += row_size;
+                first_page.0.insert(&new_record);
                 self.pages.insert(first_page);
 
                 // split page that is too big
@@ -220,7 +240,8 @@ impl DB {
         if let Some(last_page) = self.pages.last() {
             if id > last_page.0.header.end {
                 let mut last_page = self.pages.pop_last().unwrap();
-                last_page.0.insert(Record { id, val });
+                last_page.0.size += row_size;
+                last_page.0.insert(&new_record);
                 self.pages.insert(last_page);
                 // split page that is too big
                 if let Some(last_page) = self.pages.last() {
@@ -241,7 +262,7 @@ impl DB {
         let mut fetched_page = next_page.clone();
 
         self.pages.remove(&fetched_page);
-        fetched_page.0.insert(Record { id, val });
+        fetched_page.0.insert(&new_record);
 
         if fetched_page.0.size() > PAGE_SIZE {
             let (head, tail) = fetched_page.0.split();
@@ -253,14 +274,14 @@ impl DB {
     }
 }
 
-pub fn deserialize(bytes: Vec<u8>) -> BTreeSet<(Page, Option<usize>)> {
+pub fn deserialize(bytes: Vec<u8>, schema: &[RowType]) -> BTreeSet<(Page, Option<usize>)> {
     assert!(bytes.len() % PAGE_SIZE == 0);
 
     let mut pages = vec![];
 
     for i in 0..(bytes.len() / PAGE_SIZE) {
         pages.push((
-            Page::from_bytes(&bytes[i * PAGE_SIZE..(i + 1) * PAGE_SIZE]),
+            Page::from_bytes(&bytes[i * PAGE_SIZE..(i + 1) * PAGE_SIZE], schema),
             Some(i),
         ));
     }
@@ -270,7 +291,7 @@ pub fn deserialize(bytes: Vec<u8>) -> BTreeSet<(Page, Option<usize>)> {
 
 impl Drop for DB {
     fn drop(&mut self) {
-        self.serialize()
+        self.serialize();
     }
 }
 
