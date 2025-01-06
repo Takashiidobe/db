@@ -9,7 +9,7 @@ to disk without needing to affect the individual pages.
 ## Architecture
 
 This database features two parts, a sorted set of pages (which store a
-set of (id, val) tuples), which are saved to a file, and a Write-Ahead
+set of (id, row) tuples), which are saved to a file, and a Write-Ahead
 Log (WAL), which appends insertions and deletions to a file.
 
 In the event the database crashes, as long as the last update
@@ -26,5 +26,12 @@ location in the file, and thus, have to be saved.
 
 ## Limitations/Todos
 
-- There's no schema customization, just a u32 for id, and u32 for value.
 - There's only one table per database.
+
+## Future Plans?
+
+- Make multiple tables per database, which have to be named.
+- Joins
+- Transactions
+- Indexes (to be done after transactions, since writes have to hit
+  multiple tables on disk and be confirmed as one unit).
