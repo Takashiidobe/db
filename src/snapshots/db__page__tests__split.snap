@@ -1,0 +1,32 @@
+---
+source: src/page.rs
+expression: "(head, tail)"
+---
+- header:
+    end: 2
+    start: 1
+    count: 2
+  data:
+    1:
+      - U32: 10
+    2:
+      - U32: 20
+  dirty: true
+  size: 16
+  schema:
+    - Id
+    - U32
+- header:
+    end: 4
+    start: 3
+    count: 2
+  data:
+    3:
+      - U32: 30
+    4:
+      - U32: 40
+  dirty: true
+  size: 16
+  schema:
+    - Id
+    - U32

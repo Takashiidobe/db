@@ -23,9 +23,9 @@ pub struct DB {
 }
 
 impl DB {
-    pub fn new(file_name: &str, schema: Schema) -> Self {
+    pub fn new(file_name: &str, schema: &[RowType]) -> Self {
         let epoch = 1;
-        let (db_file, wal_file) = Self::setup_files(file_name, epoch);
+        let (db_file, wal_file, schema_file) = Self::setup_files(file_name, epoch);
         Self {
             file: db_file,
             pages: BTreeSet::new(),
@@ -34,17 +34,20 @@ impl DB {
                 records: BTreeMap::new(),
             },
             epoch,
-            schema,
+            schema: Schema {
+                schema: schema.to_vec(),
+                file: schema_file,
+            },
         }
     }
 
     pub fn new_with_pages(
         pages: BTreeSet<(Page, Option<usize>)>,
         file_name: &str,
-        schema: Schema,
+        schema: &[RowType],
     ) -> Self {
         let epoch = 1;
-        let (db_file, wal_file) = Self::setup_files(file_name, epoch);
+        let (db_file, wal_file, schema_file) = Self::setup_files(file_name, epoch);
 
         Self {
             file: db_file,
@@ -54,11 +57,14 @@ impl DB {
                 records: BTreeMap::new(),
             },
             epoch,
-            schema,
+            schema: Schema {
+                schema: schema.to_vec(),
+                file: schema_file,
+            },
         }
     }
 
-    fn setup_files(file_name: &str, epoch: u64) -> (File, File) {
+    fn setup_files(file_name: &str, epoch: u64) -> (File, File, File) {
         let db_file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -71,7 +77,13 @@ impl DB {
             .append(true)
             .open(format!("{file_name}.{epoch}.wal"))
             .unwrap();
-        (db_file, wal_file)
+        let schema_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(format!("{file_name}.{epoch}.schema"))
+            .unwrap();
+        (db_file, wal_file, schema_file)
     }
 
     pub fn sync(&mut self) -> bool {
@@ -297,19 +309,22 @@ impl Drop for DB {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, fs};
+    use std::{collections::HashMap, fs, num::NonZero};
+
+    use insta::assert_yaml_snapshot as snapshot;
 
     use quickcheck_macros::quickcheck;
 
     use super::*;
-    use crate::page::*;
+
+    const DEFAULT_SCHEMA: &[RowType] = &[RowType::Id, RowType::U32];
 
     #[test]
     fn read_write() {
-        let mut db = DB::new("tests/read_write");
+        let mut db = DB::new("tests/read_write", DEFAULT_SCHEMA);
 
         for i in 1..=5 {
-            db.insert(NonZeroU32::new(i).unwrap(), i);
+            db.insert(NonZeroU32::new(i).unwrap(), &[RowVal::U32(i)]);
         }
 
         db.serialize();
@@ -317,170 +332,35 @@ mod tests {
 
         let bytes = fs::read("tests/read_write.1.db").unwrap();
 
-        let deserialized = deserialize(bytes);
+        let deserialized = deserialize(bytes, DEFAULT_SCHEMA);
 
-        assert_eq!(
-            deserialized,
-            BTreeSet::from_iter(vec![(
-                Page {
-                    header: PageHeader {
-                        end: NonZeroU32::new(5).unwrap(),
-                        start: NonZeroU32::new(1).unwrap(),
-                        count: 5
-                    },
-                    data: BTreeMap::from([
-                        (NonZeroU32::new(1).unwrap(), 1),
-                        (NonZeroU32::new(2).unwrap(), 2),
-                        (NonZeroU32::new(3).unwrap(), 3),
-                        (NonZeroU32::new(4).unwrap(), 4),
-                        (NonZeroU32::new(5).unwrap(), 5)
-                    ]),
-                    dirty: false
-                },
-                Some(0)
-            )])
-        );
-    }
-
-    #[test]
-    fn insert() {
-        let mut data = vec![];
-
-        for i in 1..=2 {
-            data.push(Record {
-                id: NonZeroU32::new(i).unwrap(),
-                val: i,
-            });
-        }
-
-        for i in 4..=5 {
-            data.push(Record {
-                id: NonZeroU32::new(i).unwrap(),
-                val: i,
-            });
-        }
-
-        let page = Page::new(&data);
-        let (head, tail) = page.split();
-
-        let pages = BTreeSet::from_iter(vec![(head, None), (tail, None)]);
-
-        let mut db = DB::new_with_pages(pages, "tests/insert");
-
-        db.insert(3.try_into().unwrap(), 3);
-        db.sync();
-
-        assert_eq!(
-            db.pages,
-            BTreeSet::from_iter(vec![
-                (
-                    Page {
-                        header: PageHeader {
-                            end: NonZeroU32::new(2).unwrap(),
-                            start: NonZeroU32::new(1).unwrap(),
-                            count: 2
-                        },
-                        data: BTreeMap::from([
-                            (NonZeroU32::new(1).unwrap(), 1),
-                            (NonZeroU32::new(2).unwrap(), 2)
-                        ]),
-                        dirty: true
-                    },
-                    None
-                ),
-                (
-                    Page {
-                        header: PageHeader {
-                            end: NonZeroU32::new(5).unwrap(),
-                            start: NonZeroU32::new(3).unwrap(),
-                            count: 3
-                        },
-                        data: BTreeMap::from([
-                            (NonZeroU32::new(3).unwrap(), 3),
-                            (NonZeroU32::new(4).unwrap(), 4),
-                            (NonZeroU32::new(5).unwrap(), 5),
-                        ]),
-                        dirty: true
-                    },
-                    None
-                )
-            ])
-        );
-    }
-
-    #[test]
-    fn get() {
-        let mut data = vec![];
-
-        for i in 1..=10 {
-            data.push(Record {
-                id: i.try_into().unwrap(),
-                val: i,
-            });
-        }
-
-        let page = Page::new(&data);
-
-        let pages = BTreeSet::from_iter(vec![(page, None)]);
-
-        let db = DB::new_with_pages(pages, "tests/insert");
-
-        assert_eq!(db.get(3.try_into().unwrap()), Some(3));
+        snapshot!(deserialized);
     }
 
     #[test]
     fn insert_loop() {
-        let mut db = DB::new("tests/insert_loop");
-
-        let mut iter = vec![];
+        let mut db = DB::new("tests/insert_loop", DEFAULT_SCHEMA);
 
         for i in 1..=510 {
-            iter.push((i.try_into().unwrap(), i));
-            db.insert(i.try_into().unwrap(), i);
+            db.insert(NonZero::new(i).unwrap(), &[RowVal::U32(i)]);
         }
 
         db.sync();
 
-        assert_eq!(
-            db.pages,
-            BTreeSet::from_iter(vec![(
-                Page {
-                    header: PageHeader {
-                        end: 510.try_into().unwrap(),
-                        start: 1.try_into().unwrap(),
-                        count: 510,
-                    },
-                    data: BTreeMap::from_iter(iter),
-                    dirty: true
-                },
-                None
-            )])
-        );
+        snapshot!(db.pages);
     }
 
     #[quickcheck]
-    fn fuzz_db_inserts(records: Vec<(NonZeroU32, u32)>) -> bool {
-        let mut db = DB::new("tests/fuzz_db_inserts");
+    fn fuzz_db_get_insert(records: HashMap<NonZeroU32, u32>) -> bool {
+        let mut db = DB::new("tests/fuzz_db_get", DEFAULT_SCHEMA);
 
-        for (id, val) in records {
-            db.insert(id, val);
-        }
-
-        true
-    }
-
-    #[quickcheck]
-    fn fuzz_db_get(records: Vec<NonZeroU32>) -> bool {
-        let records: HashSet<&NonZeroU32> = HashSet::from_iter(&records);
-        let mut db = DB::new("tests/fuzz_db_get");
-
-        for val in &records {
-            db.insert(**val, val.get());
+        for (id, val) in &records {
+            db.insert(*id, &[RowVal::U32(*val)]);
         }
 
         records
             .into_iter()
-            .map(|id| db.get(*id) == Some(id.get()))
+            .map(|(id, val)| db.get(id) == Some(vec![RowVal::U32(val)]))
             .all(|f| f)
     }
 }

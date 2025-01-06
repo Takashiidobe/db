@@ -4,7 +4,11 @@ use crate::{
 };
 use std::{collections::BTreeMap, num::NonZeroU32};
 
+#[cfg(test)]
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 pub struct PageHeader {
     pub end: NonZeroU32,
     pub start: NonZeroU32,
@@ -32,6 +36,7 @@ impl PageHeader {
     }
 }
 
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Page {
     pub header: PageHeader,
@@ -222,239 +227,126 @@ mod tests {
     use std::num::NonZero;
 
     use super::*;
-    use quickcheck::{Arbitrary, Gen};
+    use insta::assert_yaml_snapshot as snapshot;
     use quickcheck_macros::quickcheck;
 
-    impl Arbitrary for Record {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let id = u32::arbitrary(g);
-            let val = u32::arbitrary(g);
-            let mut bytes: [u8; 8] = [0; 8];
-            for (i, b) in id.to_le_bytes().into_iter().enumerate() {
-                bytes[i] = b;
-            }
-            for (i, b) in val.to_le_bytes().into_iter().enumerate() {
-                bytes[i + 4] = b;
-            }
-
-            Record::from_bytes(&bytes)
-        }
-    }
-
-    impl Arbitrary for Page {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let record_count = u8::arbitrary(g);
-            let data: Vec<_> = (0..record_count).map(|_| Record::arbitrary(g)).collect();
-
-            Self::new(&data)
-        }
-    }
+    const DEFAULT_SCHEMA: &[RowType] = &[RowType::Id, RowType::U32];
 
     #[test]
     fn split() {
         let data = &[
-            Record {
-                id: NonZeroU32::new(3).unwrap(),
-                val: 30,
-            },
-            Record {
-                id: NonZeroU32::new(4).unwrap(),
-                val: 40,
-            },
-            Record {
-                id: NonZeroU32::new(1).unwrap(),
-                val: 10,
-            },
-            Record {
-                id: NonZeroU32::new(2).unwrap(),
-                val: 20,
-            },
+            vec![RowVal::Id(NonZeroU32::new(3).unwrap()), RowVal::U32(30)],
+            vec![RowVal::Id(NonZeroU32::new(4).unwrap()), RowVal::U32(40)],
+            vec![RowVal::Id(NonZeroU32::new(1).unwrap()), RowVal::U32(10)],
+            vec![RowVal::Id(NonZeroU32::new(2).unwrap()), RowVal::U32(20)],
         ];
 
-        let page = Page::new(data);
+        let page = Page::new(data, DEFAULT_SCHEMA);
         let (head, tail) = page.split();
-        assert_eq!(
-            head,
-            Page::new_dirty(&[
-                Record {
-                    id: NonZero::new(1).unwrap(),
-                    val: 10
-                },
-                Record {
-                    id: NonZero::new(2).unwrap(),
-                    val: 20
-                },
-            ])
-        );
-        assert_eq!(
-            tail,
-            Page::new_dirty(&[
-                Record {
-                    id: NonZero::new(3).unwrap(),
-                    val: 30
-                },
-                Record {
-                    id: NonZero::new(4).unwrap(),
-                    val: 40
-                }
-            ])
-        );
+        snapshot!((head, tail));
     }
 
     #[test]
     fn merge() {
         let data = &[
-            Record {
-                id: NonZeroU32::new(3).unwrap(),
-                val: 30,
-            },
-            Record {
-                id: NonZeroU32::new(4).unwrap(),
-                val: 40,
-            },
-            Record {
-                id: NonZeroU32::new(1).unwrap(),
-                val: 10,
-            },
-            Record {
-                id: NonZeroU32::new(2).unwrap(),
-                val: 20,
-            },
+            vec![RowVal::Id(NonZeroU32::new(3).unwrap()), RowVal::U32(30)],
+            vec![RowVal::Id(NonZeroU32::new(4).unwrap()), RowVal::U32(40)],
+            vec![RowVal::Id(NonZeroU32::new(1).unwrap()), RowVal::U32(10)],
+            vec![RowVal::Id(NonZeroU32::new(2).unwrap()), RowVal::U32(20)],
         ];
+
         let (head, tail) = data.split_at(data.len() / 2);
 
-        let mut head = Page::new_dirty(head);
-        head.merge(Page::new(tail));
-        assert_eq!(head, Page::new_dirty(data));
+        let mut head = Page::new_dirty(head, DEFAULT_SCHEMA);
+        head.merge(Page::new(tail, DEFAULT_SCHEMA));
+        snapshot!(head);
     }
 
     #[test]
     fn get() {
-        let data = vec![
-            Record {
-                id: NonZeroU32::new(3).unwrap(),
-                val: 30,
-            },
-            Record {
-                id: NonZeroU32::new(1).unwrap(),
-                val: 10,
-            },
-            Record {
-                id: NonZeroU32::new(2).unwrap(),
-                val: 20,
-            },
+        let data = &[
+            vec![RowVal::Id(NonZeroU32::new(3).unwrap()), RowVal::U32(30)],
+            vec![RowVal::Id(NonZeroU32::new(1).unwrap()), RowVal::U32(10)],
+            vec![RowVal::Id(NonZeroU32::new(2).unwrap()), RowVal::U32(20)],
         ];
         let id_to_get = NonZero::new(3).unwrap();
 
-        let page = Page::new(&data);
+        let page = Page::new(data, DEFAULT_SCHEMA);
         let item = page.get(id_to_get);
-        assert_eq!(
-            item,
-            Some(Record {
-                id: NonZero::new(3).unwrap(),
-                val: 30
-            })
-        );
+        snapshot!(item);
     }
 
     #[test]
     fn insert() {
         let mut data = vec![
-            Record {
-                id: NonZeroU32::new(3).unwrap(),
-                val: 30,
-            },
-            Record {
-                id: NonZeroU32::new(1).unwrap(),
-                val: 10,
-            },
-            Record {
-                id: NonZeroU32::new(2).unwrap(),
-                val: 20,
-            },
+            vec![RowVal::Id(NonZeroU32::new(3).unwrap()), RowVal::U32(30)],
+            vec![RowVal::Id(NonZeroU32::new(1).unwrap()), RowVal::U32(10)],
+            vec![RowVal::Id(NonZeroU32::new(2).unwrap()), RowVal::U32(20)],
         ];
-        let record_to_add = Record {
-            id: NonZeroU32::new(4).unwrap(),
-            val: 40,
-        };
 
-        let mut head = Page::new(&data);
-        head.insert(record_to_add);
+        let record_to_add = vec![RowVal::Id(NonZeroU32::new(4).unwrap()), RowVal::U32(40)];
+
+        let mut head = Page::new(&data, DEFAULT_SCHEMA);
+        head.insert(&record_to_add);
         data.push(record_to_add);
 
-        assert_eq!(head, Page::new_dirty(&data));
+        snapshot!(head);
     }
 
     #[test]
     fn remove() {
         let mut data = vec![
-            Record {
-                id: NonZeroU32::new(3).unwrap(),
-                val: 30,
-            },
-            Record {
-                id: NonZeroU32::new(1).unwrap(),
-                val: 10,
-            },
-            Record {
-                id: NonZeroU32::new(2).unwrap(),
-                val: 20,
-            },
-            Record {
-                id: NonZeroU32::new(4).unwrap(),
-                val: 40,
-            },
+            vec![RowVal::Id(NonZeroU32::new(3).unwrap()), RowVal::U32(30)],
+            vec![RowVal::Id(NonZeroU32::new(4).unwrap()), RowVal::U32(40)],
+            vec![RowVal::Id(NonZeroU32::new(1).unwrap()), RowVal::U32(10)],
+            vec![RowVal::Id(NonZeroU32::new(2).unwrap()), RowVal::U32(20)],
         ];
 
         let id_to_remove = NonZero::new(4).unwrap();
 
-        let mut head = Page::new(&data);
+        let mut head = Page::new(&data, DEFAULT_SCHEMA);
         head.remove(id_to_remove);
         data.pop();
-        assert_eq!(head, Page::new_dirty(&data));
+        snapshot!(head);
     }
 
     #[test]
     fn serde() {
         let data = &[
-            Record {
-                id: NonZeroU32::new(3).unwrap(),
-                val: 30,
-            },
-            Record {
-                id: NonZeroU32::new(4).unwrap(),
-                val: 40,
-            },
-            Record {
-                id: NonZeroU32::new(1).unwrap(),
-                val: 10,
-            },
-            Record {
-                id: NonZeroU32::new(2).unwrap(),
-                val: 20,
-            },
+            vec![RowVal::Id(NonZeroU32::new(3).unwrap()), RowVal::U32(30)],
+            vec![RowVal::Id(NonZeroU32::new(4).unwrap()), RowVal::U32(40)],
+            vec![RowVal::Id(NonZeroU32::new(1).unwrap()), RowVal::U32(10)],
+            vec![RowVal::Id(NonZeroU32::new(2).unwrap()), RowVal::U32(20)],
         ];
 
-        let page = Page::new(data);
+        let page = Page::new(data, DEFAULT_SCHEMA);
 
-        assert_eq!(Page::from_bytes(&page.to_bytes()), page);
+        assert_eq!(Page::from_bytes(&page.to_bytes(), DEFAULT_SCHEMA), page);
     }
 
     #[quickcheck]
-    fn fuzz_page_new(records: Vec<Record>) -> bool {
+    fn fuzz_page_new(records: Vec<(NonZeroU32, u32)>) -> bool {
         if records.len() >= u32::MAX as usize {
             return true;
         }
-        let page = Page::new(&records);
-        Page::from_bytes(&page.to_bytes()) == page
+        let records: Vec<_> = records
+            .iter()
+            .map(|(id, val)| vec![RowVal::Id(*id), RowVal::U32(*val)])
+            .collect();
+        let page = Page::new(&records, DEFAULT_SCHEMA);
+        Page::from_bytes(&page.to_bytes(), DEFAULT_SCHEMA) == page
     }
 
     #[quickcheck]
-    fn fuzz_page_split_merge(records: Vec<Record>) -> bool {
+    fn fuzz_page_split_merge(records: Vec<(NonZeroU32, u32)>) -> bool {
         if records.len() >= u32::MAX as usize {
             return true;
         }
-        let page = Page::new_dirty(&records);
+        let records: Vec<_> = records
+            .iter()
+            .map(|(id, val)| vec![RowVal::Id(*id), RowVal::U32(*val)])
+            .collect();
+        let page = Page::new_dirty(&records, DEFAULT_SCHEMA);
         let (mut head, tail) = page.split();
         head.merge(tail);
         head == page

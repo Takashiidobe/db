@@ -7,12 +7,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.70"
-indexset = "0.7.0"
+indexset = { version = "0.9.0", features = ["serde"] }
 rustyline = "15.0.0"
 
 [dev-dependencies]
+insta = { version = "1.41.1", features = ["yaml"] }
 quickcheck = "1.0.3"
 quickcheck_macros = "1.0.0"
+serde = { version = "1.0.217", features = ["derive"] }
 
 [features]
 small_pages = []

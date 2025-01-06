@@ -1,5 +1,8 @@
 use std::{fmt::Display, fs::File, io::Write as _, num::NonZeroU32};
 
+#[cfg(test)]
+use serde::{Deserialize, Serialize};
+
 use crate::wal::WALRecord;
 
 pub fn to_bytes_bool(b: bool) -> [u8; 1] {
@@ -29,6 +32,7 @@ pub fn to_bytes_string(s: &str) -> Vec<u8> {
     res
 }
 
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RowType {
     Id,
@@ -58,6 +62,7 @@ impl RowType {
     }
 }
 
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RowVal {
     Id(NonZeroU32),
@@ -78,7 +83,7 @@ impl Display for RowVal {
 }
 
 impl RowVal {
-    pub fn to_bytes(self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             RowVal::Id(n) => n.get().to_le_bytes().to_vec(),
             RowVal::U32(n) => n.to_le_bytes().to_vec(),
@@ -88,7 +93,7 @@ impl RowVal {
                 res.extend(b);
                 res
             }
-            RowVal::Bool(b) => to_bytes_bool(b).to_vec(),
+            RowVal::Bool(b) => to_bytes_bool(*b).to_vec(),
         }
     }
 
@@ -111,10 +116,7 @@ impl RowVal {
     pub fn size(&self) -> u16 {
         match self {
             RowVal::Id(_) | RowVal::U32(_) => 4,
-            RowVal::Bytes(b) => {
-                let len = b.len() as u16;
-                len + 2
-            }
+            RowVal::Bytes(b) => b.len() as u16 + 2,
             RowVal::Bool(_) => 1,
         }
     }
@@ -249,14 +251,13 @@ mod tests {
         let n: u32 = 600;
 
         let vals = vec![
-            RowVal::Id(id),
             RowVal::Bytes(byte_str.to_vec()),
             RowVal::Bool(b),
             RowVal::U32(n),
         ];
 
         let actions = vec![
-            WALRecord::Insert(vals),
+            WALRecord::Insert(id, vals),
             WALRecord::Delete(1.try_into().unwrap()),
         ];
 

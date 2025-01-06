@@ -110,20 +110,8 @@ exit (quits the repl)"#;
                 if line.starts_with("create ") {
                     let trimmed = line.strip_prefix("create ").unwrap();
                     let schema_types = parse_create_table(trimmed);
-                    let schema_file = OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .open(&schema_file_name)
-                        .unwrap();
 
-                    let schema = Schema {
-                        schema: schema_types,
-                        file: schema_file,
-                    };
-
-                    db = Some(DB::new("test", schema));
+                    db = Some(DB::new("test", &schema_types));
                     continue;
                 }
                 if line.trim() == "exit" {

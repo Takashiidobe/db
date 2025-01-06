@@ -1,0 +1,20 @@
+---
+source: src/page.rs
+expression: head
+---
+header:
+  end: 3
+  start: 1
+  count: 3
+data:
+  1:
+    - U32: 10
+  2:
+    - U32: 20
+  3:
+    - U32: 30
+dirty: true
+size: 32
+schema:
+  - Id
+  - U32

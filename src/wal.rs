@@ -1,7 +1,11 @@
 use std::{collections::BTreeMap, fs::File, io::Write, num::NonZeroU32};
 
+#[cfg(test)]
+use serde::{Deserialize, Serialize};
+
 use crate::row::{bytes_to_id, bytes_to_values, RowType, RowVal};
 
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WALRecord {
     Insert(NonZeroU32, Vec<RowVal>),
@@ -60,7 +64,6 @@ pub fn deserialize_wal(bytes: &[u8], schema: &[RowType]) -> Vec<WALRecord> {
     records
 }
 
-// The Wal itself needs to have a file handle to append to
 #[derive(Debug)]
 pub struct WAL {
     pub file: File,

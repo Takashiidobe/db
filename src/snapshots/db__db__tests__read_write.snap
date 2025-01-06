@@ -1,0 +1,31 @@
+---
+source: src/db.rs
+expression: deserialized
+---
+inner:
+  - - - header:
+          end: 5
+          start: 1
+          count: 5
+        data:
+          1:
+            - U32: 1
+          2:
+            - U32: 2
+          3:
+            - U32: 3
+          4:
+            - U32: 4
+          5:
+            - U32: 5
+        dirty: false
+        size: 40
+        schema:
+          - Id
+          - U32
+      - 0
+index:
+  inner:
+    - 1
+node_capacity: 1024
+len: 1
